@@ -1,0 +1,16 @@
+[
+{
+  "modid": "tacz",
+  "name": "Timeless & Classics Guns: Legacy",
+  "description": "TACZ 的 1.12.2 Kotlin 移植分支（开发中）。",
+  "version": "${version}",
+  "mcversion": "${mcversion}",
+  "url": "https://github.com/KasumiNova/TACZ-Legacy",
+  "updateUrl": "",
+  "authorList": ["nekocrane (TACZ)", "KasumiNova", "Hippo0824"],
+  "credits": "Original TACZ by nekocrane; 1.12.2 port by KasumiNova; fixes by Hippo0824",
+  "logoFile": "",
+  "screenshots": [],
+  "dependencies": ["required-after:forgelin_continuous"]
+}
+]

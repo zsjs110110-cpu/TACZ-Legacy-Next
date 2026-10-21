@@ -1,0 +1,341 @@
+import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
+import com.gtnewhorizons.retrofuturagradle.mcp.ReobfuscatedJar
+import org.jetbrains.gradle.ext.Gradle
+import org.jetbrains.gradle.ext.compiler
+import org.jetbrains.gradle.ext.runConfigurations
+import org.jetbrains.gradle.ext.settings
+import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+
+buildscript { 
+    repositories {
+        mavenCentral()
+    }
+    
+    dependencies {
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:${libs.versions.kotlinVersion.get()}")
+    }
+}
+
+plugins {
+    id("java")
+    id("java-library")
+    id("jacoco")
+    kotlin("jvm") version libs.versions.kotlinVersion
+    id("com.github.johnrengelman.shadow") version "8.1.1"
+    id("maven-publish")
+    id("org.jetbrains.gradle.plugin.idea-ext") version "1.1.7"
+    id("eclipse")
+    id("com.gtnewhorizons.retrofuturagradle") version "1.4.9"
+    id("com.matthewprenger.cursegradle") version "1.4.0"
+}
+
+@Suppress("PropertyName")
+val mod_version: String by project
+@Suppress("PropertyName")
+val maven_group: String by project
+@Suppress("PropertyName")
+val mod_id: String by project
+@Suppress("PropertyName")
+val mod_name: String by project
+@Suppress("PropertyName")
+val archives_base_name: String by project
+val mod_authors: String by project
+
+@Suppress("PropertyName")
+val forgelin_continuous_version: String by project
+
+@Suppress("PropertyName")
+val use_access_transformer: String by project
+
+@Suppress("PropertyName")
+val use_mixins: String by project
+@Suppress("PropertyName")
+val use_coremod: String by project
+@Suppress("PropertyName")
+val use_assetmover: String by project
+
+@Suppress("PropertyName")
+val include_mod: String by project
+@Suppress("PropertyName")
+val coremod_plugin_class_name: String by project
+
+version = mod_version
+
+// jar 파일 이름을 폴더 이름이 아닌 설정값(TACZ-Legacy)으로 고정
+base {
+    archivesName.set(archives_base_name)
+}
+
+java {
+    toolchain {
+        languageVersion.set(JavaLanguageVersion.of(8))
+        // Azul covers the most platforms for Java 8 toolchains, crucially including MacOS arm64
+        vendor.set(JvmVendorSpec.AZUL)
+    }
+    // Generate sources and javadocs jars when building and publishing
+    withSourcesJar()
+    // withJavadocJar()
+}
+
+kotlin {
+    explicitApi()
+}
+
+tasks.withType<JavaCompile>().configureEach {
+    options.encoding = "UTF-8"
+}
+
+tasks.named<JavaCompile>("compileJava") {
+    val compileKotlinTask = tasks.named<KotlinCompile>("compileKotlin")
+    dependsOn(compileKotlinTask)
+    classpath += files(compileKotlinTask.flatMap { it.destinationDirectory })
+}
+
+tasks.named<JavaCompile>("compileTestJava") {
+    val compileTestKotlinTask = tasks.named<KotlinCompile>("compileTestKotlin")
+    dependsOn(compileTestKotlinTask)
+    classpath += files(compileTestKotlinTask.flatMap { it.destinationDirectory })
+}
+
+val shade by configurations.creating
+
+configurations.named("implementation") {
+    extendsFrom(shade)
+}
+
+minecraft {
+    mcVersion.set("1.12.2")
+
+    // MCP Mappings
+    mcpMappingChannel.set("stable")
+    mcpMappingVersion.set("39")
+
+    // Set username here, the UUID will be looked up automatically
+    username.set("Developer")
+
+    // Add any additional tweaker classes here
+    // extraTweakClasses.add("org.spongepowered.asm.launch.MixinTweaker")
+
+    // Add various JVM arguments here for runtime
+    val args = mutableListOf("-ea:${group}")
+    if (use_coremod.toBoolean()) {
+        args += "-Dfml.coreMods.load=$coremod_plugin_class_name"
+    }
+    if (use_mixins.toBoolean()) {
+        args += "-Dmixin.hotSwap=true"
+        args += "-Dmixin.checks.interfaces=true"
+        args += "-Dmixin.debug.export=true"
+    }
+    val forwardedRuntimeProperties = System.getProperties().stringPropertyNames()
+        .filter { it.startsWith("tacz.focusedSmoke") || it.startsWith("tacz.audio") }
+        .sorted()
+        .mapNotNull { key ->
+            System.getProperty(key)?.let { value -> "-D${key}=${value}" }
+        }
+    args += forwardedRuntimeProperties
+    extraRunJvmArguments.addAll(args)
+
+    // Include and use dependencies' Access Transformer files
+    useDependencyAccessTransformers.set(true)
+
+    // These libraries are shaded into the production jar, so obfuscated runtime
+    // launches should not also add external copies to the classpath.
+    groupsToExcludeFromAutoReobfMapping.addAll("org.luaj", "org.joml", "org.apache.commons")
+
+    // Add any properties you want to swap out for a dynamic value at build time here
+    // Any properties here will be added to a class at build time, the name can be configured below
+    // Example:
+    injectedTags.put("VERSION", project.version)
+    injectedTags.put("MOD_ID", mod_id)
+    injectedTags.put("MOD_NAME", mod_name)
+}
+
+// Generate a group.archives_base_name.Tags class
+tasks.injectTags.configure {
+    // Change Tags class' name here:
+    outputClassName.set("${maven_group}.Tags")
+}
+
+repositories {
+    maven {
+        name = "CleanroomMC Maven"
+        url = uri("https://maven.cleanroommc.com")
+    }
+    maven {
+        name = "SpongePowered Maven"
+        url = uri("https://repo.spongepowered.org/maven")
+    }
+    maven {
+        name = "CurseMaven"
+        url = uri("https://cursemaven.com")
+        content {
+            includeGroup("curse.maven")
+        }
+    }
+    mavenLocal() // Must be last for caching to work
+}
+
+dependencies {
+    implementation("io.github.chaosunity.forgelin:Forgelin-Continuous:${forgelin_continuous_version}") {
+        exclude("net.minecraftforge")
+    }
+    shade("org.luaj:luaj-jse:3.0.1")
+    shade("org.joml:joml:1.10.5")
+    shade("org.apache.commons:commons-math3:3.6.1")
+
+    // Bloom effect and depends
+    implementation(rfg.deobf("curse.maven:lumenized-1234162:6734060"))
+    implementation(rfg.deobf("curse.maven:ctm-267602:2915363"))
+    implementation(rfg.deobf("curse.maven:codechickenlib-242818:2779848"))
+    
+    compileOnly(rfg.deobf("curse.maven:mouse-tweaks-461660:5876158"))
+    // JEI/HEI 兼容（可选依赖，仅编译期使用 API）
+    compileOnly(rfg.deobf("curse.maven:had-enough-items-557549:4543375"))
+
+    testImplementation("junit:junit:4.13.2")
+
+    if (use_assetmover.toBoolean()) {
+        implementation("com.cleanroommc:assetmover:2.5")
+    }
+
+    // Example of deobfuscating a dependency
+    // implementation rfg.deobf("curse.maven:had-enough-items-557549:4543375")
+
+    if (use_mixins.toBoolean()) {
+        // Change your mixin refmap name here:
+        val mixin =
+            modUtils.enableMixins("zone.rong:mixinbooter:10.7", "mixins.${mod_id}.refmap.json") as String
+        api(mixin) {
+            isTransitive = true
+        }
+        annotationProcessor("org.ow2.asm:asm-debug-all:5.2")
+        annotationProcessor("com.google.guava:guava:24.1.1-jre")
+        annotationProcessor("com.google.code.gson:gson:2.8.6")
+        annotationProcessor(mixin) {
+            isTransitive = false
+        }
+    }
+}
+
+// Adds Access Transformer files to tasks
+@Suppress("Deprecation")
+if (use_access_transformer.toBoolean()) {
+    for (at in sourceSets.getByName("main").resources.files) {
+        if (at.name.toLowerCase().endsWith("_at.cfg")) {
+            tasks.deobfuscateMergedJarToSrg.get().accessTransformerFiles.from(at)
+            tasks.srgifyBinpatchedJar.get().accessTransformerFiles.from(at)
+        }
+    }
+}
+
+@Suppress("UnstableApiUsage")
+tasks.withType<ProcessResources> {
+    // This will ensure that this task is redone when the versions change
+    inputs.property("version", mod_version)
+    inputs.property("mcversion", minecraft.mcVersion.get())
+
+    // Replace various properties in mcmod.info and pack.mcmeta if applicable
+    filesMatching(arrayListOf("mcmod.info", "pack.mcmeta")) {
+        expand(
+            "version" to mod_version,
+            // Property 객체를 그대로 넘기면 "extension 'minecraft' property 'mcVersion'" 문자열이 들어간다
+            "mcversion" to minecraft.mcVersion.get()
+        )
+    }
+
+    if (use_access_transformer.toBoolean()) {
+        rename("(.+_at.cfg)", "META-INF/$1") // Make sure Access Transformer files are in META-INF folder
+    }
+}
+
+tasks.withType<Jar> {
+    manifest {
+        val attributeMap = mutableMapOf<String, String>()
+        if (use_coremod.toBoolean()) {
+            attributeMap["FMLCorePlugin"] = coremod_plugin_class_name
+            if (include_mod.toBoolean()) {
+                attributeMap["FMLCorePluginContainsFMLMod"] = true.toString()
+//                attributeMap["ForceLoadAsMod"] = (project.gradle.startParameter.taskNames[0] == "build").toString()
+            }
+        }
+        if (use_access_transformer.toBoolean()) {
+            attributeMap["FMLAT"] = archives_base_name + "_at.cfg"
+        }
+        if (use_mixins.toBoolean()) {
+            attributeMap["MixinConfigs"] = "mixins.${mod_id}.json"
+        }
+        // jar 속성(버전/공급자)에 표시되는 정보
+        attributeMap["Implementation-Title"] = mod_name
+        attributeMap["Implementation-Version"] = mod_version
+        attributeMap["Implementation-Vendor"] = mod_authors
+        attributeMap["Specification-Title"] = mod_id
+        attributeMap["Specification-Version"] = mod_version
+        attributeMap["Specification-Vendor"] = mod_authors
+        attributes(attributeMap)
+    }
+}
+
+val shadowJarTask = tasks.named<ShadowJar>("shadowJar") {
+    archiveClassifier.set("shadow-dev")
+    configurations = listOf(shade)
+
+    relocate("org.luaj", "${maven_group}.shadow.org.luaj")
+    relocate("org.joml", "${maven_group}.shadow.org.joml")
+    relocate("org.apache.commons.math3", "${maven_group}.shadow.org.apache.commons.math3")
+
+    mergeServiceFiles()
+    exclude("META-INF/*.SF", "META-INF/*.DSA", "META-INF/*.RSA", "META-INF/INDEX.LIST")
+}
+
+tasks.named<ReobfuscatedJar>("reobfJar") {
+    dependsOn(shadowJarTask)
+    inputJar.set(shadowJarTask.flatMap { it.archiveFile })
+}
+
+idea {
+    module {
+        inheritOutputDirs = true
+    }
+    project {
+        settings {
+            runConfigurations {
+                add(Gradle("1. Run Client").apply {
+                    setProperty("taskNames", listOf("runClient"))
+                })
+                add(Gradle("2. Run Server").apply {
+                    setProperty("taskNames", listOf("runServer"))
+                })
+                add(Gradle("3. Run Obfuscated Client").apply {
+                    setProperty("taskNames", listOf("runObfClient"))
+                })
+                add(Gradle("4. Run Obfuscated Server").apply {
+                    setProperty("taskNames", listOf("runObfServer"))
+                })
+            }
+            compiler.javac {
+                afterEvaluate {
+                    javacAdditionalOptions = "-encoding utf8"
+                    moduleJavacAdditionalOptions = mutableMapOf(
+                        (project.name + ".main") to tasks.compileJava.get().options.compilerArgs.joinToString(" ") { "\"$it\"" }
+                    )
+                }
+            }
+        }
+    }
+}
+
+tasks.named("processIdeaSettings").configure {
+    dependsOn("injectTags")
+}
+
+jacoco {
+    toolVersion = "0.8.11"
+}
+
+tasks.named<JacocoReport>("jacocoTestReport") {
+    reports {
+        xml.required.set(true)
+        html.required.set(true)
+        csv.required.set(false)
+    }
+}

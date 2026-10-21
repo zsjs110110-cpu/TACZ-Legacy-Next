@@ -1,0 +1,438 @@
+package com.tacz.legacy.common.entity.shooter
+
+import com.tacz.legacy.api.DefaultAssets
+import com.tacz.legacy.api.entity.ShootResult
+import com.tacz.legacy.api.event.GunFireEvent
+import com.tacz.legacy.api.event.GunShootEvent
+import com.tacz.legacy.api.item.IGun
+import com.tacz.legacy.api.item.gun.FireMode
+import com.tacz.legacy.api.modifier.Modifier
+import com.tacz.legacy.common.entity.EntityKineticBullet
+import com.tacz.legacy.common.item.ModernKineticGunItem
+import com.tacz.legacy.common.config.LegacyConfigManager
+import com.tacz.legacy.common.network.TACZNetworkHandler
+import com.tacz.legacy.common.network.message.event.ServerMessageGunFire
+import com.tacz.legacy.common.network.message.event.ServerMessageGunShoot
+import com.tacz.legacy.common.network.message.event.ServerMessageSyncBaseTimestamp
+import com.tacz.legacy.common.resource.BoltType
+import com.tacz.legacy.common.resource.BulletCombatData
+import com.tacz.legacy.common.resource.GunCombatData
+import com.tacz.legacy.common.resource.GunDataAccessor
+import com.tacz.legacy.common.resource.TACZGunSoundRouting
+import com.tacz.legacy.common.resource.TACZGunPackPresentation
+import com.tacz.legacy.common.resource.TACZGunPackRuntimeRegistry
+import com.tacz.legacy.common.resource.TACZGunPropertyResolver
+import com.tacz.legacy.sound.SoundManager
+import net.minecraft.entity.EntityLivingBase
+import net.minecraft.entity.player.EntityPlayerMP
+import net.minecraft.item.ItemStack
+import net.minecraftforge.common.MinecraftForge
+import com.tacz.legacy.api.entity.IGunOperator
+import net.minecraftforge.fml.relauncher.Side
+import net.minecraftforge.items.CapabilityItemHandler
+import java.util.function.BooleanSupplier
+import java.util.function.Supplier
+
+/**
+ * 服务端射击逻辑。与上游 TACZ LivingEntityShoot 行为一致。
+ */
+public class LivingEntityShoot(
+    private val shooter: EntityLivingBase,
+    private val data: ShooterDataHolder,
+    private val draw: LivingEntityDrawGun,
+) {
+    public fun shoot(pitch: Supplier<Float>, yaw: Supplier<Float>, timestamp: Long, chargeProgress: Float = 0f): ShootResult {
+        val supplier = data.currentGunItem ?: return ShootResult.NOT_DRAW
+        val currentGunItem = supplier.get()
+        val iGun = currentGunItem.item as? IGun ?: return ShootResult.NOT_GUN
+        val gunId = iGun.getGunId(currentGunItem)
+        val gunData = GunDataAccessor.getGunData(gunId) ?: return ShootResult.ID_NOT_EXIST
+
+        // 射击角度校验：拒绝 NaN/无穷或超范围俯仰角，避免生成含非法速度/旋转的服务端子弹。
+        // 公共入口统一校验，同时覆盖脚本（shoot）路径。
+        val pitchValue = pitch.get()
+        val yawValue = yaw.get()
+        if (!pitchValue.isFinite() || !yawValue.isFinite() || pitchValue !in -90f..90f) {
+            return ShootResult.UNKNOWN_FAIL
+        }
+
+        // 射击冷却检查
+        if (LegacyConfigManager.server.serverShootCooldownCheck) {
+            val coolDown = getShootCoolDown(timestamp)
+            if (coolDown == -1L) return ShootResult.UNKNOWN_FAIL
+            if (coolDown > 0) return ShootResult.COOL_DOWN
+        }
+
+        // 网络时间戳校验
+        if (LegacyConfigManager.server.serverShootNetworkCheck && shooter is EntityPlayerMP) {
+            val now = System.currentTimeMillis()
+            var alpha = now - data.baseTimestamp - timestamp
+            val isFirstTimedShoot = data.shootTimestamp < 0L && data.lastShootTimestamp < 0L
+            if (isFirstTimedShoot && (alpha < -300 || alpha > 600)) {
+                data.baseTimestamp = now - timestamp
+                alpha = now - data.baseTimestamp - timestamp
+            }
+            if (alpha < -300 || alpha > 600) {
+                // 时间戳偏移过大——发起双向同步握手，而不是单方面重置
+                TACZNetworkHandler.sendToPlayer(ServerMessageSyncBaseTimestamp(), shooter)
+                return ShootResult.NETWORK_FAIL
+            }
+        }
+
+        // 检查是否正在换弹
+        if (data.reloadStateType.isReloading()) return ShootResult.IS_RELOADING
+        // 检查是否在切枪：服务端的切枪计时比客户端晚开始，允许 SYNC_GRACE_MS 的误差，避免幽灵射击
+        if (draw.getDrawCoolDown() > SYNC_GRACE_MS) return ShootResult.IS_DRAWING
+        // 检查是否在拉栓
+        if (data.isBolting) return ShootResult.IS_BOLTING
+        // 检查是否在奔跑
+        if (data.sprintTimeS > 0) return ShootResult.IS_SPRINTING
+
+        // 弹药检查
+        val gunOperator = IGunOperator.fromLivingEntity(shooter)
+        val needCheckAmmo = gunOperator.needCheckAmmo()
+        val boltType = gunData.boltType
+        val hasAmmoInBarrel = iGun.hasBulletInBarrel(currentGunItem) && boltType != BoltType.OPEN_BOLT
+        val ammoCount = iGun.getCurrentAmmoCount(currentGunItem) + (if (hasAmmoInBarrel) 1 else 0)
+        val useInventoryAmmo = iGun.useInventoryAmmo(currentGunItem)
+        val hasInventoryAmmo = iGun.hasInventoryAmmo(shooter, currentGunItem, needCheckAmmo) || hasAmmoInBarrel
+
+        val noAmmo = (useInventoryAmmo && !hasInventoryAmmo) || (!useInventoryAmmo && ammoCount < 1)
+        if (noAmmo) return ShootResult.NO_AMMO
+
+        // 过热检查
+        if (gunData.hasHeatData && iGun.isOverheatLocked(currentGunItem)) return ShootResult.OVERHEATED
+
+        // 膛内子弹检查（手动拉栓枪）
+        if (boltType == BoltType.MANUAL_ACTION && !hasAmmoInBarrel) return ShootResult.NEED_BOLT
+
+        // 闭膛上膛逻辑
+        if (boltType == BoltType.CLOSED_BOLT && !hasAmmoInBarrel) {
+            if (useInventoryAmmo) {
+                consumeAmmoFromPlayer(currentGunItem, 1, needCheckAmmo)
+            } else {
+                iGun.reduceCurrentAmmoCount(currentGunItem)
+            }
+            iGun.setBulletInBarrel(currentGunItem, true)
+        }
+
+        // 充能校验（对齐原版 LivingEntityShoot：有 chargeData 时校验 chargeProgress）
+        val fireMode = iGun.getFireMode(currentGunItem)
+        val chargeData = gunData.chargeData?.get(fireMode)
+        if (chargeData != null) {
+            val minProgress = minOf(chargeData.fireThreshold, chargeData.maxCharge)
+            if (chargeProgress + 0.001f < minProgress) return ShootResult.UNKNOWN_FAIL
+            val clampedProgress = chargeProgress.coerceIn(0f, chargeData.maxCharge)
+            data.chargeProgress = clampedProgress
+        } else {
+            data.chargeProgress = 0f
+        }
+
+        val logicalSide = if (shooter.world.isRemote) Side.CLIENT else Side.SERVER
+        val shootEvent = GunShootEvent(shooter, currentGunItem, logicalSide)
+        if (MinecraftForge.EVENT_BUS.post(shootEvent)) return ShootResult.FORGE_EVENT_CANCEL
+
+        if (!shooter.world.isRemote) {
+            TACZNetworkHandler.sendToTrackingEntity(ServerMessageGunShoot(shooter.entityId, currentGunItem), shooter)
+        }
+
+        data.lastShootTimestamp = data.shootTimestamp
+        data.heatTimestamp = System.currentTimeMillis()
+        data.shootTimestamp = timestamp
+
+        // 检查是否有数据脚本
+        val shootFunc = GunScriptHooks.find(gunData, "shoot")
+        if (shootFunc != null) {
+            // 脚本接管射击逻辑；脚本出错时不再继续射击，只记录日志，避免服务端崩溃
+            val api = TACZGunScriptAPI.create(shooter, data, currentGunItem, pitch, yaw)
+            GunScriptHooks.run(gunData, "shoot", {}) {
+                shootFunc.call(org.luaj.vm2.lib.jse.CoerceJavaToLua.coerce(api))
+            }
+        } else {
+            // 默认射击路径
+            executeShoot(currentGunItem, iGun, gunData, pitch, yaw)
+            handleShootHeat(currentGunItem, iGun, gunData)
+        }
+
+        return ShootResult.SUCCESS
+    }
+
+    public companion object {
+        /**
+         * 客户端与服务端计时起点之差的容许量（毫秒）。服务端在收到请求后的下一个 tick（≤50ms）才开始计时，
+         * 再加上网络抖动，取两个 tick。
+         */
+        public const val SYNC_GRACE_MS: Long = 100L
+    }
+
+    /**
+     * 每次射击后累积热量。与上游 TACZ ModernKineticGunScriptAPI.handleShootHeat 行为一致。
+     */
+    private fun handleShootHeat(gunItem: ItemStack, iGun: IGun, gunData: GunCombatData) {
+        if (!gunData.hasHeatData) return
+        val current = iGun.getHeatAmount(gunItem)
+        val newHeat = (current + gunData.heatPerShot).coerceAtMost(gunData.heatMax)
+        iGun.setHeatAmount(gunItem, newHeat)
+        if (newHeat >= gunData.heatMax) {
+            iGun.setOverheatLocked(gunItem, true)
+        }
+    }
+
+    private fun executeShoot(
+        gunItem: ItemStack,
+        iGun: IGun,
+        gunData: GunCombatData,
+        pitch: Supplier<Float>,
+        yaw: Supplier<Float>,
+    ) {
+        val fireMode = iGun.getFireMode(gunItem)
+        if (fireMode == FireMode.BURST) {
+            BurstFireTaskScheduler.addCycleTask(
+                BooleanSupplier { performSingleFire(gunItem, iGun, gunData, pitch, yaw) },
+                gunData.getBurstShootIntervalMs(),
+                gunData.burstCount.coerceAtLeast(1),
+            )
+            return
+        }
+
+        performSingleFire(gunItem, iGun, gunData, pitch, yaw)
+    }
+
+    private fun performSingleFire(
+        gunItem: ItemStack,
+        iGun: IGun,
+        gunData: GunCombatData,
+        pitch: Supplier<Float>,
+        yaw: Supplier<Float>,
+    ): Boolean {
+        if (shooter.isDead || shooter.heldItemMainhand !== gunItem || shooter.heldItemMainhand.isEmpty) {
+            return false
+        }
+        // 首发后排队的连发子弹可能在换弹/拉栓期间继续击发；这里重新检查互斥状态，避免消耗弹药并生成实体
+        if (data.reloadStateType.isReloading() || data.isBolting) {
+            return false
+        }
+
+        val logicalSide = if (shooter.world.isRemote) Side.CLIENT else Side.SERVER
+        val fireEvent = GunFireEvent(shooter, gunItem, logicalSide)
+        if (MinecraftForge.EVENT_BUS.post(fireEvent)) {
+            return true
+        }
+
+        if (!shooter.world.isRemote) {
+            TACZNetworkHandler.sendToTrackingEntity(ServerMessageGunFire(shooter.entityId, gunItem), shooter)
+        }
+
+        // 弹药消耗（bolt-type-aware）
+        if (!reduceAmmoOnce(gunItem, iGun, gunData)) {
+            return false
+        }
+
+        // 生成子弹实体
+        if (!shooter.world.isRemote) {
+            val fireMode = iGun.getFireMode(gunItem)
+        val bulletData = gunData.bulletData
+            val gunId = iGun.getGunId(gunItem)
+            val snapshot = TACZGunPackRuntimeRegistry.getSnapshot()
+            val gunDisplayId = TACZGunPackPresentation.resolveGunDisplayId(snapshot, gunId) ?: DefaultAssets.DEFAULT_GUN_DISPLAY_ID
+            val nearbySoundProfile = TACZGunSoundRouting.resolveNearbyFireSoundProfile(gunItem)
+            val ammoId = gunData.ammoId ?: DefaultAssets.EMPTY_AMMO_ID
+
+            if (nearbySoundProfile.soundDistance > 0) {
+                val soundKey = if (nearbySoundProfile.useSilenceSound) {
+                    SoundManager.SILENCE_3P_SOUND
+                } else {
+                    SoundManager.SHOOT_3P_SOUND
+                }
+                SoundManager.sendSoundToNearby(
+                    shooter,
+                    nearbySoundProfile.soundDistance,
+                    gunId,
+                    gunDisplayId,
+                    soundKey,
+                    0.8f,
+                    0.9f + shooter.world.rand.nextFloat() * 0.125f,
+                )
+            }
+
+            val processedSpeedBase = (bulletData.getProcessedSpeed() + (gunData.fireModeAdjusts[fireMode]?.ammoSpeed ?: 0f)).coerceAtLeast(0.1f)
+            // 兼容层 ③ C1-2/C1-5：配件 modifier 一次收集，ammo_speed 先 eval 出初速，
+            // damage/战斗属性在子弹循环内覆盖（必须早于 applySpread）
+            val attachmentModifiers = com.tacz.legacy.common.resource.TACZGunPropertyResolver.collectAttachmentModifiers(gunItem, iGun)
+            val processedSpeed = if (attachmentModifiers != null && attachmentModifiers.ammoSpeed.isNotEmpty()) {
+                com.tacz.legacy.common.resource.TACZAttachmentModifierRegistry
+                    .evalNumeric(attachmentModifiers.ammoSpeed, processedSpeedBase.toDouble()).toFloat().coerceAtLeast(0.1f)
+            } else {
+                processedSpeedBase
+            }
+            val bulletAmount = TACZBulletSpreadResolver.resolveBulletAmount(gunItem, iGun, gunData)
+            val pitchVal = pitch.get()
+            val yawVal = yaw.get()
+            // 配件 ignite 合并（循环外算一次，避免每发子弹重复收集）
+            val attachmentIgnite = com.tacz.legacy.common.resource.TACZGunPropertyResolver.resolveIgnite(gunItem, iGun, gunData)
+
+            for (i in 0 until bulletAmount) {
+                val isTracer = nextBulletIsTracer(bulletData)
+                val bullet = EntityKineticBullet(
+                    shooter.world, shooter, bulletData,
+                    gunId, gunDisplayId, ammoId, isTracer,
+                )
+                bullet.applyShotgunDamageSpread(bulletAmount)
+                gunData.fireModeAdjusts[fireMode]?.let {
+                    bullet.applyFireModeDamageAdjust(it.damage)
+                    bullet.applyFireModeExtraAdjust(it.armorIgnore, it.headShot, it.knockback)
+                }
+                // 兼容层 ③：配件 modifier 接入子弹属性（armor_ignore/head_shot/pierce/knockback）
+                // 在 fire_mode_adjust 之后覆盖，确保配件加成叠加在最终值上
+                // 兼容层 ③ C1-2：damage 逐距离段 eval 覆盖基础伤害与距离衰减曲线
+                attachmentModifiers?.let {
+                    bullet.applyAttachmentModifiers(it)
+                    bullet.applyAttachmentDamageModifier(it.damage)
+                    // 兼容层 ③ C2-ext：effective_range 修正距离衰减曲线第一段
+                    bullet.applyAttachmentEffectiveRange(it.effectiveRange)
+                    // 兼容层 ③ C2-exp：explosion OR 语义（配件可点亮爆炸）
+                    bullet.applyAttachmentExplosion(it.explosion)
+                }
+                bullet.applyIgniteModifier(attachmentIgnite)
+                TACZBulletSpreadResolver.applySpread(
+                    shooter = shooter,
+                    dataHolder = data,
+                    gunItem = gunItem,
+                    iGun = iGun,
+                    gunData = gunData,
+                    bullet = bullet,
+                    bulletIndex = i,
+                    processedSpeed = processedSpeed,
+                    pitch = pitchVal,
+                    yaw = yawVal,
+                )
+                shooter.world.spawnEntity(bullet)
+            }
+        }
+
+        return true
+    }
+
+    /**
+     * 消耗一发弹药。根据 bolt 类型决定消耗膛内还是弹匣内弹药。
+     * 与上游 TACZ ModernKineticGunScriptAPI.reduceAmmoOnce 行为一致。
+     * @return 是否成功消耗弹药
+     */
+    private fun reduceAmmoOnce(gunItem: ItemStack, iGun: IGun, gunData: GunCombatData): Boolean {
+        val needCheckAmmo = IGunOperator.fromLivingEntity(shooter).needCheckAmmo()
+        val boltType = gunData.boltType
+        val hasAmmoInBarrel = iGun.hasBulletInBarrel(gunItem) && boltType != BoltType.OPEN_BOLT
+        val useInventoryAmmo = iGun.useInventoryAmmo(gunItem)
+        val hasInventoryAmmo = if (useInventoryAmmo) iGun.hasInventoryAmmo(shooter, gunItem, needCheckAmmo) else false
+        val noAmmo = if (useInventoryAmmo) !hasInventoryAmmo else iGun.getCurrentAmmoCount(gunItem) < 1
+
+        when (boltType) {
+            BoltType.MANUAL_ACTION -> {
+                if (!hasAmmoInBarrel) return false
+                iGun.setBulletInBarrel(gunItem, false)
+                return true
+            }
+            BoltType.CLOSED_BOLT -> {
+                if (!noAmmo) {
+                    if (useInventoryAmmo) {
+                        return consumeAmmoFromPlayer(gunItem, 1, needCheckAmmo) == 1
+                    }
+                    iGun.reduceCurrentAmmoCount(gunItem)
+                    return true
+                }
+                if (!hasAmmoInBarrel) return false
+                iGun.setBulletInBarrel(gunItem, false)
+                return true
+            }
+            BoltType.OPEN_BOLT -> {
+                if (noAmmo) return false
+                if (useInventoryAmmo) {
+                    return consumeAmmoFromPlayer(gunItem, 1, needCheckAmmo) == 1
+                }
+                iGun.reduceCurrentAmmoCount(gunItem)
+                return true
+            }
+        }
+    }
+
+    /**
+     * 从射击者背包消耗弹药。
+     * @return 实际消耗的弹药数量
+     */
+    private fun consumeAmmoFromPlayer(gunItem: ItemStack, neededAmount: Int, needCheckAmmo: Boolean = true): Int {
+        val gunItemObj = gunItem.item
+        if (gunItemObj !is ModernKineticGunItem) return 0
+        // 创造模式不消耗弹药（与上游 TACZ 一致）
+        if (!needCheckAmmo) return neededAmount
+        if (gunItemObj.useDummyAmmo(gunItem)) {
+            val dummy = gunItemObj.getDummyAmmoAmount(gunItem)
+            val consume = minOf(dummy, neededAmount)
+            gunItemObj.setDummyAmmoAmount(gunItem, dummy - consume)
+            return consume
+        }
+        val handler = shooter.getCapability(CapabilityItemHandler.ITEM_HANDLER_CAPABILITY, null) ?: return 0
+        return gunItemObj.findAndExtractInventoryAmmo(handler, gunItem, neededAmount)
+    }
+
+    /**
+     * 曳光弹判定（对外接口）。与上游 IGunOperator#nextBulletIsTracer 行为一致：
+     * 每调用一次推进一次 shootCount，并返回本次是否为曳光弹。
+     * 当前未持枪或不是枪械时返回 false，且不推进计数。
+     */
+    public fun nextBulletIsTracer(): Boolean {
+        val held = data.heldGun() ?: return false
+        return nextBulletIsTracer(held.gunData.bulletData)
+    }
+
+    /**
+     * 曳光弹判定（按弹药数据）。与上游 nextBulletIsTracer 行为一致。
+     * 未声明曳光弹（tracer_count_interval < 0）时不推进计数，保持与原短路逻辑一致。
+     */
+    private fun nextBulletIsTracer(bulletData: BulletCombatData): Boolean {
+        if (!bulletData.hasTracerAmmo()) return false
+        return nextBulletIsTracer(bulletData.tracerCountInterval)
+    }
+
+    /**
+     * 曳光弹判定（按间隔）。与上游 nextBulletIsTracer 行为一致。
+     */
+    private fun nextBulletIsTracer(tracerCountInterval: Int): Boolean {
+        data.shootCount++
+        if (tracerCountInterval == -1) return false
+        return data.shootCount % (tracerCountInterval + 1) == 0
+    }
+
+    /**
+     * 以当前时间戳查询射击冷却。
+     */
+    public fun getShootCoolDown(): Long {
+        return getShootCoolDown(System.currentTimeMillis() - data.baseTimestamp)
+    }
+
+    /**
+     * 根据指定 timestamp 查询射击冷却。
+     */
+    public fun getShootCoolDown(timestamp: Long): Long {
+        val supplier = data.currentGunItem ?: return 0L
+        val currentGunItem = supplier.get()
+        val iGun = currentGunItem.item as? IGun ?: return 0L
+        val gunId = iGun.getGunId(currentGunItem)
+        val gunData = GunDataAccessor.getGunData(gunId) ?: return -1L
+        val fireMode = iGun.getFireMode(currentGunItem)
+        val interval = timestamp - data.shootTimestamp
+
+        val shootInterval = if (fireMode == FireMode.BURST) {
+            gunData.getBurstMinIntervalMs()
+        } else {
+            // 兼容层 ③ C1-3：配件 rpm modifier 与 heat 射速倍率共同参与射速计算，
+            // 但顺序对齐上游 GunData:302-312 —— heat 在 clamp(1,1200) **之后**相乘（审计 B3-15）。
+            val rpmModifiers = TACZGunPropertyResolver.collectGunNumericModifiers(currentGunItem, iGun, "rpm")
+            val heatRpmMultiplier = TACZGunPropertyResolver.resolveHeatRpmModifier(currentGunItem, iGun, gunData)
+            gunData.getShootIntervalMs(fireMode, rpmModifiers, heatRpmMultiplier)
+        }
+
+        var coolDown = shootInterval - interval
+        coolDown -= 5 // 5ms window
+        return if (coolDown < 0) 0L else coolDown
+    }
+}

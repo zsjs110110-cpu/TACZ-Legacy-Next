@@ -1,0 +1,52 @@
+{
+  "variants": {
+    "facing=north,part=main": {
+      "model": "tacz:gun_smith_table"
+    },
+    "facing=north,part=side": {
+      "model": "tacz:gun_smith_table"
+    },
+    "facing=north,part=top": {
+      "model": "tacz:gun_smith_table"
+    },
+    "facing=north,part=top_side": {
+      "model": "tacz:gun_smith_table"
+    },
+    "facing=south,part=main": {
+      "model": "tacz:gun_smith_table"
+    },
+    "facing=south,part=side": {
+      "model": "tacz:gun_smith_table"
+    },
+    "facing=south,part=top": {
+      "model": "tacz:gun_smith_table"
+    },
+    "facing=south,part=top_side": {
+      "model": "tacz:gun_smith_table"
+    },
+    "facing=west,part=main": {
+      "model": "tacz:gun_smith_table"
+    },
+    "facing=west,part=side": {
+      "model": "tacz:gun_smith_table"
+    },
+    "facing=west,part=top": {
+      "model": "tacz:gun_smith_table"
+    },
+    "facing=west,part=top_side": {
+      "model": "tacz:gun_smith_table"
+    },
+    "facing=east,part=main": {
+      "model": "tacz:gun_smith_table"
+    },
+    "facing=east,part=side": {
+      "model": "tacz:gun_smith_table"
+    },
+    "facing=east,part=top": {
+      "model": "tacz:gun_smith_table"
+    },
+    "facing=east,part=top_side": {
+      "model": "tacz:gun_smith_table"
+    }
+  }
+}

@@ -1,0 +1,36 @@
+# eclipse
+bin
+*.launch
+.settings
+.metadata
+.classpath
+.project
+
+# idea
+out
+*.ipr
+*.iws
+*.iml
+.idea
+
+# gradle
+build
+.gradle
+logs
+
+# other
+eclipse
+run
+
+# vscode
+*.code-workspace
+
+# kotlin
+.kotlin
+
+# local agent workflow workspace
+.agent-workspace/
+
+# release 构建产物：不入库，走 GitHub Release 附件（见 README「下载与安装」）
+release/*
+!release/README.md
