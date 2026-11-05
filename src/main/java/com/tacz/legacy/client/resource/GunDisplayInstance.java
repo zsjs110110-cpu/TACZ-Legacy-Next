@@ -59,6 +59,13 @@ public class GunDisplayInstance {
      * 渲染端据此关闭 alpha test，让枪包贴图里的半透明像素真正混合而不是被裁掉。
      */
     private boolean enableTransparency = false;
+    /**
+     * 第三人称姿势名（{@code display} 的 {@code third_person_animation}）。
+     *
+     * <p>缺省写 {@code "empty"} 是上游的语义：它不命中任何具名实现，
+     * {@link com.tacz.legacy.api.client.other.ThirdPersonManager#getAnimation} 会回落到 {@code default}。
+     */
+    private String thirdPersonAnimation = "empty";
     private @Nullable LaserConfig laserConfig;
 
     private GunDisplayInstance() {}
@@ -79,6 +86,7 @@ public class GunDisplayInstance {
             instance.showCrosshair = display.isShowCrosshair();
             instance.ammoCountStyle = display.getAmmoCountStyle();
             instance.enableTransparency = display.enablesTransparency();
+            instance.thirdPersonAnimation = StringUtils.defaultIfBlank(display.getThirdPersonAnimation(), "empty");
             return instance;
         } catch (Exception e) {
             TACZLegacy.logger.warn("Failed to create GunDisplayInstance: {}", e.getMessage());
@@ -310,6 +318,14 @@ public class GunDisplayInstance {
     @Nullable
     public LaserConfig getLaserConfig() {
         return laserConfig;
+    }
+
+    /**
+     * 第三人称姿势名，交给 {@link com.tacz.legacy.api.client.other.ThirdPersonManager} 解析。
+     * 永远不会返回 null。
+     */
+    public String getThirdPersonAnimation() {
+        return thirdPersonAnimation;
     }
 
     public static final class LodModel {

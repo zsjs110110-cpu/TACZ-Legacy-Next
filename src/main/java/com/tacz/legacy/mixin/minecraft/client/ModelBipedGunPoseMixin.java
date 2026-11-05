@@ -1,7 +1,9 @@
 package com.tacz.legacy.mixin.minecraft.client;
 
 import com.tacz.legacy.api.item.IGun;
+import com.tacz.legacy.client.animation.third.InnerThirdPersonManager;
 import net.minecraft.client.model.ModelBiped;
+import net.minecraft.client.model.ModelRenderer;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityLivingBase;
 import net.minecraft.item.ItemStack;
@@ -21,6 +23,18 @@ public abstract class ModelBipedGunPoseMixin {
     @Shadow
     public ModelBiped.ArmPose leftArmPose;
 
+    @Shadow
+    public ModelRenderer bipedHead;
+
+    @Shadow
+    public ModelRenderer bipedBody;
+
+    @Shadow
+    public ModelRenderer bipedRightArm;
+
+    @Shadow
+    public ModelRenderer bipedLeftArm;
+
     @Inject(method = "setRotationAngles", at = @At("HEAD"))
     private void tacz$forceGunArmPose(
             float limbSwing, float limbSwingAmount, float ageInTicks,
@@ -39,5 +53,26 @@ public abstract class ModelBipedGunPoseMixin {
                 this.rightArmPose = ModelBiped.ArmPose.BOW_AND_ARROW;
             }
         }
+    }
+
+    /**
+     * 原版算完之后再覆盖成实际的持枪姿势。
+     *
+     * <p>HEAD 那个 ArmPose 只是把手臂"扶正"——让别的读 {@code ArmPose} 的逻辑（比如第一人称
+     * 手部渲染的分支）也能看出这是持枪状态。真正的姿势由 {@code display} 的
+     * {@code third_person_animation} 决定：没写的枪走 {@code default}，写了 {@code minigun}
+     * 的走机枪姿势，第三方枪包也能注册自己的实现。
+     */
+    @Inject(method = "setRotationAngles", at = @At("TAIL"))
+    private void tacz$applyThirdPersonGunPose(
+            float limbSwing, float limbSwingAmount, float ageInTicks,
+            float netHeadYaw, float headPitch, float scaleFactor,
+            Entity entityIn, CallbackInfo ci
+    ) {
+        if (!(entityIn instanceof EntityLivingBase)) {
+            return;
+        }
+        InnerThirdPersonManager.setRotationAnglesHead(
+                (EntityLivingBase) entityIn, this.bipedRightArm, this.bipedLeftArm, this.bipedBody, this.bipedHead);
     }
 }
