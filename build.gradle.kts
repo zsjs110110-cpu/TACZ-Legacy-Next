@@ -81,6 +81,8 @@ kotlin {
     explicitApi()
 }
 
+// playerAnimator 兼容层已随 1.12.2 移植库落地（playeranimator-1.12.2），
+// 不再排除 client/compat/playeranimator；该包在库缺席时全部入口短路。
 tasks.withType<JavaCompile>().configureEach {
     options.encoding = "UTF-8"
 }
@@ -193,6 +195,16 @@ dependencies {
     compileOnly(rfg.deobf("curse.maven:had-enough-items-557549:4543375"))
 
     testImplementation("junit:junit:4.13.2")
+
+    // playerAnimator 1.12.2 移植库（本地兄弟工程）。
+    // 运行期由玩家单独安装 playeranimator mod；这里只编译期引用，不打进 Legacy jar。
+    val playerAnimatorJar = file("../playeranimator-1.12.2/build/libs/playeranimator-1.12.2-1.0.2-rc1-1.12.2.jar")
+    if (playerAnimatorJar.exists()) {
+        compileOnly(files(playerAnimatorJar))
+        runtimeOnly(files(playerAnimatorJar))
+    } else {
+        logger.warn("playeranimator-1.12.2 jar not found at ${playerAnimatorJar.absolutePath}; compat layer will not compile")
+    }
 
     if (use_assetmover.toBoolean()) {
         implementation("com.cleanroommc:assetmover:2.5")

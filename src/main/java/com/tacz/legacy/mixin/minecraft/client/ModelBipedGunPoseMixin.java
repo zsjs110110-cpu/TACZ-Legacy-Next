@@ -73,6 +73,7 @@ public abstract class ModelBipedGunPoseMixin {
             return;
         }
         InnerThirdPersonManager.setRotationAnglesHead(
-                (EntityLivingBase) entityIn, this.bipedRightArm, this.bipedLeftArm, this.bipedBody, this.bipedHead);
+                (EntityLivingBase) entityIn, this.bipedRightArm, this.bipedLeftArm, this.bipedBody, this.bipedHead,
+                limbSwingAmount);
     }
 }

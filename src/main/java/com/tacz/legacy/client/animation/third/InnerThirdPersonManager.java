@@ -4,6 +4,7 @@ import com.tacz.legacy.api.client.other.IThirdPersonAnimation;
 import com.tacz.legacy.api.client.other.ThirdPersonManager;
 import com.tacz.legacy.api.entity.IGunOperator;
 import com.tacz.legacy.api.item.IGun;
+import com.tacz.legacy.client.compat.playeranimator.PlayerAnimatorCompat;
 import com.tacz.legacy.client.resource.GunDisplayInstance;
 import com.tacz.legacy.client.resource.TACZClientAssetManager;
 import com.tacz.legacy.common.resource.TACZGunPackPresentation;
@@ -17,9 +18,9 @@ import net.minecraft.util.ResourceLocation;
 /**
  * 第三人称持枪姿势的分发点。
  *
- * <p>移植自上游 {@code com.tacz.guns.client.animation.third.InnerThirdPersonManager}，只保留
- * "原版骨骼姿势"这条路：上游还会先判断该枪有没有 {@code player_animator_3rd} 动画并交给
- * playerAnimator 播放，但那个库最低要求 1.16.4，1.12.2 根本装不上，所以那条分支在这里没有对应物。
+ * <p>移植自上游 {@code com.tacz.guns.client.animation.third.InnerThirdPersonManager}：
+ * 有 {@code player_animator_3rd} 且 playerAnimator 库在场时交给动画状态机，否则回落到
+ * "直接摆原版骨骼姿势"；两条路径在同一次调用内互斥。
  *
  * <p>调用方是 {@code ModelBipedGunPoseMixin}，注入在 {@code ModelBiped.setRotationAngles} 的 TAIL：
  * 原版先把手臂摆成正常姿势，这里再覆盖成持枪姿势。
@@ -39,7 +40,8 @@ public final class InnerThirdPersonManager {
      * @param head     头部模型
      */
     public static void setRotationAnglesHead(EntityLivingBase entityIn, ModelRenderer rightArm,
-                                             ModelRenderer leftArm, ModelRenderer body, ModelRenderer head) {
+                                             ModelRenderer leftArm, ModelRenderer body, ModelRenderer head,
+                                             float limbSwingAmount) {
         // 暂停时不算，否则标题界面的预览实体会一直重算（上游同款保护）
         // 1.12.2 的 Minecraft.isGamePaused 字段是 private，公开访问器是同名方法。
         Minecraft minecraft = Minecraft.getMinecraft();
@@ -50,19 +52,32 @@ public final class InnerThirdPersonManager {
         ItemStack mainHandItem = entityIn.getHeldItemMainhand();
         IGun iGun = IGun.getIGunOrNull(mainHandItem);
         if (iGun == null) {
+            PlayerAnimatorCompat.stopAllAnimation(entityIn);
             return;
         }
 
         // 睡觉、爬梯、游泳、鞘翅飞行时不摆枪姿（与上游一致）
         if (entityIn.isPlayerSleeping() || entityIn.isOnLadder() || entityIn.isInWater()
                 || entityIn.isElytraFlying()) {
+            PlayerAnimatorCompat.stopAllAnimation(entityIn);
             return;
         }
 
         GunDisplayInstance display = resolveDisplay(iGun, mainHandItem);
         if (display == null) {
+            PlayerAnimatorCompat.stopRotationAdjustment(entityIn);
             return;
         }
+
+        // playerAnimator 在场且该枪声明了 player_animator_3rd：交给动画状态机，
+        // 与静态姿势互斥（不依赖两个 TAIL mixin 的先后顺序）。
+        if (PlayerAnimatorCompat.hasPlayerAnimator3rd(entityIn, display)) {
+            PlayerAnimatorCompat.playAnimation(entityIn, display, limbSwingAmount);
+            return;
+        }
+
+        // 没有 player_animator_3rd：走静态姿势，同时关掉动画层的朝向修正。
+        PlayerAnimatorCompat.stopRotationAdjustment(entityIn);
 
         IThirdPersonAnimation animation = ThirdPersonManager.getAnimation(display.getThirdPersonAnimation());
         float aimingProgress = IGunOperator.fromLivingEntity(entityIn).getSynAimingProgress();

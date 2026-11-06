@@ -254,6 +254,8 @@ internal object TACZClientAssetManager {
      */
     fun reload(snapshot: TACZRuntimeSnapshot) {
         clear()
+        // playerAnimator 兼容层：清空旧 clip，再随每个枪包重扫 player_animator 目录。
+        com.tacz.legacy.client.compat.playeranimator.PlayerAnimatorCompat.clearAllAnimationCache()
         packSources.addAll(snapshot.packs.values.map { it.sourceFile })
         parseGunDisplayDefinitions(snapshot.gunDisplays)
         parseAmmoDisplayDefinitions(snapshot.ammoDisplays)
@@ -269,6 +271,7 @@ internal object TACZClientAssetManager {
         // Load assets from each pack
         for (pack in snapshot.packs.values) {
             loadAssetsFromPack(pack.sourceFile, loadPlan.models, loadPlan.textures, loadPlan.animations, loadPlan.scripts)
+            com.tacz.legacy.client.compat.playeranimator.PlayerAnimatorCompat.reloadPackAssets(pack.sourceFile)
         }
         loadAssetsFromClasspath(loadPlan.models, loadPlan.textures, loadPlan.animations, loadPlan.scripts)
 

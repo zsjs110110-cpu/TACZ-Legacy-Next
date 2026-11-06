@@ -110,6 +110,9 @@ internal class ClientProxy : CommonProxy() {
         ModelRegisterer.registerAmmoBoxPropertyOverride()
 
         // Load client-side assets (models, textures) from the already-loaded gun pack snapshot
+        // playerAnimator 兼容层必须先初始化：库在场时它会注册四个动画层与枪械事件，
+        // 随后的资产重载才能把 player_animator clip 灌进兼容层索引。
+        com.tacz.legacy.client.compat.playeranimator.PlayerAnimatorCompat.init()
         val snapshot = TACZGunPackRuntimeRegistry.getSnapshot()
         TACZClientAssetManager.reload(snapshot)
 

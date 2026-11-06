@@ -66,6 +66,12 @@ public class GunDisplayInstance {
      * {@link com.tacz.legacy.api.client.other.ThirdPersonManager#getAnimation} 会回落到 {@code default}。
      */
     private String thirdPersonAnimation = "empty";
+    /**
+     * display 的 {@code player_animator_3rd}：playerAnimator 动画数据 id。
+     * 1.12.2 上只有安装了 playeranimator 兼容库时才会被消费。
+     */
+    private @Nullable ResourceLocation playerAnimator3rd;
+    private boolean playerAnimator3rdFixedHand = false;
     private @Nullable LaserConfig laserConfig;
 
     private GunDisplayInstance() {}
@@ -87,6 +93,8 @@ public class GunDisplayInstance {
             instance.ammoCountStyle = display.getAmmoCountStyle();
             instance.enableTransparency = display.enablesTransparency();
             instance.thirdPersonAnimation = StringUtils.defaultIfBlank(display.getThirdPersonAnimation(), "empty");
+            instance.playerAnimator3rd = display.getPlayerAnimator3rd();
+            instance.playerAnimator3rdFixedHand = display.is3rdFixedHand();
             return instance;
         } catch (Exception e) {
             TACZLegacy.logger.warn("Failed to create GunDisplayInstance: {}", e.getMessage());
@@ -326,6 +334,21 @@ public class GunDisplayInstance {
      */
     public String getThirdPersonAnimation() {
         return thirdPersonAnimation;
+    }
+
+    /**
+     * display 的 {@code player_animator_3rd}，未声明时为 {@code null}。
+     */
+    @Nullable
+    public ResourceLocation getPlayerAnimator3rd() {
+        return playerAnimator3rd;
+    }
+
+    /**
+     * display 的 {@code 3rd_fixed_hand}：为 true 时玩家Animator动画不叠加手部俯仰。
+     */
+    public boolean is3rdFixedHand() {
+        return playerAnimator3rdFixedHand;
     }
 
     public static final class LodModel {
