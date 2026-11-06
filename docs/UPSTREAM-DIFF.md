@@ -107,7 +107,7 @@
 | 项 | 上游 | 本分支 | 类别 |
 |---|---|---|---|
 | 第一人称枪模 | 新 `RenderSystem` + `PoseStack` | 自建矩阵管线（兼容 1.12.2 的固定管线与 GL 状态） | A |
-| 第三人称角色动画 | `playerAnimator` 驱动 | **不可用**：`playerAnimator` 最低 1.16.4，没有 1.12.2 版本；`display` 里的 `player_animator_3rd` 会被解析但不生效 | A |
+| 第三人称角色动画 | `playerAnimator` 驱动 | **两条路径**：不装库时按 `third_person_animation` 驱动 vanilla 人模型手臂骨骼；装了 1.12.2 的 playerAnimator 移植版（modid `playeranimator`）后，对声明 `player_animator_3rd` 的枪播放关键帧 clip（层 93/94/95/96 对齐上游）。库不在场时兼容层全部短路 | A |
 | 基岩模型 | 支持 | 支持（含 UV 旋转、父子骨骼、非均匀缩放） | B |
 | 开镜光学渲染 | 模板缓冲 + `division` 骨骼 | 同（stencil-style optic） | B |
 | 枪口火焰 / 弹壳 / 曳光 | 实体组件 | 按射手状态驱动，避免"共享模型渲染别人的火焰" | B/D |
@@ -137,7 +137,6 @@
 
 | 项 | 原因 |
 |---|---|
-| `playerAnimator` 第三人称动画 | 该模组最低 1.16.4，没有 1.12.2 版本 |
 | KubeJS 脚本 | 上游是 JS、本项目脚本层是 Lua，引擎不互通 |
 | CraftTweaker / GroovyScript 兼容 | 本分支未接线（整合包无法用脚本增删改配方） |
 | JEI 制作台配方分类 | 只做了 NBT 子类型注册，玩家在 JEI 里查不到合成方式 |

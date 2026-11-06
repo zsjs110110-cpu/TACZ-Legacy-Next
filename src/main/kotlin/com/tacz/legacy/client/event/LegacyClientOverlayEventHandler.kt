@@ -10,6 +10,7 @@ import com.tacz.legacy.client.input.LegacyKeyBindings
 import com.tacz.legacy.client.gui.GunRefitScreen
 import com.tacz.legacy.client.renderer.crosshair.CrosshairType
 import com.tacz.legacy.client.resource.TACZClientAssetManager
+import com.tacz.legacy.client.util.RenderHelper
 import com.tacz.legacy.client.resource.pojo.display.gun.AmmoCountStyle
 import com.tacz.legacy.common.config.LegacyConfigManager
 import com.tacz.legacy.common.config.InteractKeyConfigRead
@@ -52,6 +53,9 @@ internal object LegacyClientOverlayEventHandler {
         if (event.type != RenderGameOverlayEvent.ElementType.CROSSHAIRS) {
             return
         }
+        // 必须在任何提前 return 之前消费掉：这个标志是按帧的，一旦某条分支没读它，
+        // 上一帧的 true 就会滞留到下一帧，准心保留判断跟着错位。
+        val scopeFallback = RenderHelper.consumeScopeFallbackThisFrame()
         val mc = Minecraft.getMinecraft()
         val player = mc.player ?: return
         if (player.isSpectator || !IGun.mainHandHoldGun(player)) {
@@ -72,7 +76,8 @@ internal object LegacyClientOverlayEventHandler {
 
         val displayInstance = LegacyClientGunAnimationDriver.resolveDisplayInstance(gunStack)
         val shouldForceShow = displayInstance?.isShowCrosshair == true
-        if (operator.getSynAimingProgress() > 0.9f && !shouldForceShow) {
+        // scopeFallback 已在函数入口消费（光影下无模板降级时没画出分划，GUI 准心必须保留）
+        if (operator.getSynAimingProgress() > 0.9f && !shouldForceShow && !scopeFallback) {
             return
         }
         if (displayInstance?.animationStateMachine?.context?.shouldHideCrossHair() == true) {

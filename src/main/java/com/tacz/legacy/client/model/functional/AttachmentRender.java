@@ -61,6 +61,8 @@ public class AttachmentRender implements IFunctionalRenderer {
         GlStateManager.pushMatrix();
         GlStateManager.translate(0.0f, -1.5f, 0.0f);
         mc.getTextureManager().bindTexture(registeredTexture);
+        // 光影无模板降级时，division 需要一张抠黑的贴图副本；把原始贴图 ID 告诉模型。
+        model.setTextureLocation(textureId);
         if (bloomOnly) {
             model.renderBloom(attachmentItem, gunItem);
         } else {

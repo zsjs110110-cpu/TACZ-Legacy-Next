@@ -110,8 +110,14 @@ internal object TACZClientAssetManager {
     /** Texture ResourceLocations registered with the TextureManager, keyed by pack texture path. */
     private val textures = LinkedHashMap<ResourceLocation, ResourceLocation>()
 
+    /** 原始贴图像素缓存：光影无模板降级时生成「抠黑」分划贴图需要读像素。 */
+    private val textureImages = LinkedHashMap<ResourceLocation, BufferedImage>()
+
     /** GUI-safe 16×16 attachment slot thumbnails keyed by original slot texture path. */
     private val guiSlotTextures = LinkedHashMap<ResourceLocation, ResourceLocation>()
+
+    /** 取原始贴图像素（用于生成光影降级时的抠黑分划贴图）。 */
+    fun getTextureImage(id: ResourceLocation): BufferedImage? = textureImages[id]
 
     /** Parsed bedrock animation files keyed by animation ResourceLocation. */
     private val animations = LinkedHashMap<ResourceLocation, BedrockAnimationFile>()
@@ -365,6 +371,8 @@ internal object TACZClientAssetManager {
         gunDisplayInstances.clear()
         ammoShellRenderAssets.clear()
         TACZAudioRuntime.clear()
+        // 曳光/弹药模型缓存在 RenderKineticBullet 里，键是枪包路径，换包后必须一起作废
+        com.tacz.legacy.client.renderer.entity.RenderKineticBullet.resetCaches()
     }
 
     private fun buildAmmoShellRenderAsset(ammoId: ResourceLocation): ShellRenderAsset? {
@@ -740,6 +748,7 @@ internal object TACZClientAssetManager {
         // Register with a unique location under tacz_dynamic namespace to avoid collision
         val registeredLoc = textureManager.getDynamicTextureLocation("tacz_pack", dynamicTexture)
         textures[id] = registeredLoc
+        textureImages[id] = image
         if (isAttachmentSlotTexture(id)) {
             val guiTexture = DynamicTexture(buildGuiSlotThumbnail(image))
             guiSlotTextures[id] = textureManager.getDynamicTextureLocation("tacz_pack_gui_slot", guiTexture)

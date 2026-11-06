@@ -70,6 +70,20 @@ internal class RenderKineticBullet(renderManager: RenderManager) : Render<Entity
         private val tracerModelViewBuffer: FloatBuffer = BufferUtils.createFloatBuffer(16)
         private val tracerProjectionBuffer: FloatBuffer = BufferUtils.createFloatBuffer(16)
         private val tracerViewportBuffer: IntBuffer = BufferUtils.createIntBuffer(16)
+
+        /**
+         * 资源包重载时清掉本类自己持有的模型缓存。
+         * `ammoModelCache` 的键是枪包里的贴图/模型路径，`/tacz reload` 换包后同一个键对应的几何已经变了，
+         * 不清就会继续画旧模型；`defaultTracerModel` 虽然是 jar 内置资源、换了也不变，
+         * 但一并重置可以让"重载后一切重建"这条规则没有例外。
+         * 由 `TACZClientAssetManager.clear()` 调用。
+         */
+        @JvmStatic
+        fun resetCaches() {
+            ammoModelCache.clear()
+            defaultTracerModel = null
+            defaultTracerModelResolved = false
+        }
     }
 
     override fun doRender(entity: EntityKineticBullet, x: Double, y: Double, z: Double, entityYaw: Float, partialTicks: Float) {

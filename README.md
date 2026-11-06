@@ -13,7 +13,7 @@
 >    不需要作者为 1.12.2 改数据。
 >
 > 两者的优先级关系是：**先对齐上游语义，再做平台缺失处的等价实现**；
-> 平台确实做不到的（如依赖 `PlayerAnimator`、KubeJS），明确记录为限制而不是假装实现。
+> 平台确实做不到的（如 KubeJS、CraftTweaker），明确记录为限制而不是假装实现。
 
 ---
 
@@ -80,6 +80,8 @@ TACZ                        1.20.1 · com.tacz.guns      ← 枪包格式的定�
 | 模型容错 | 缺 `uv` / `size` / `parent` 时降级为"跳过该 cube/bone"并告警，不再整枪渲染失败 |
 | 资源接入 | 枪包目录注册为 vanilla 资源包（lang/贴图/声音可被 JEI 等读取），修了 `defaultResourcePacks` 的 SRG 名错误 |
 | 热重载 | `/tacz reload` 重建客户端资产；lang 等 vanilla 资源仍需 F3+T（见"已知限制"） |
+| 第三人称持枪动画 | 两条独立路径：不装 playerAnimator 时按 display 的 `third_person_animation` 驱动 vanilla 人模型手臂骨骼；装了则对声明 `player_animator_3rd` 的枪播放关键帧 clip（层 93/94/95/96 对齐上游），整段兼容层在库不在场时全部短路 |
+| 光影下瞄具渲染 | OptiFine 的 gbuffer 帧缓冲没有模板附件，改为按需补挂 stencil，并在光影重建帧缓冲（改分辨率 / 切全屏 / 换包）后自动重挂；镜孔遮罩半径按每个瞄具的镜片投影推导，不再用统一常数 |
 | 诊断 | 移除调试日志噪音；枪包问题改为结构化 issue；按 ID 查不到时首次告警 |
 
 ### 原移植版没做完、本分支补上的部分
@@ -182,7 +184,7 @@ TACZ                        1.20.1 · com.tacz.guns      ← 枪包格式的定�
 | **GroovyScript 兼容** | ❌ 全仓零代码 | 同上 |
 | **JEI 制作台配方分类** | ❌ 只有 NBT 子类型注册 | 玩家在 JEI 里查不到枪械/配件的合成方式 |
 | **会开枪的 NPC** | ❌ 缺 `EntityAIBase` | 底层 `IGunOperator` 已面向任意 `LivingEntity`，第三方理论上可自行实现 |
-| **渲染 / 动画管线重构** | ❌ 未开始 | 原作者自述"推测是老旧 AI 反向移植，需要大重构" |
+| **渲染 / 动画管线重构** | ⚠️ 结论已改：不需要大重构 | 静态研判见 `tacz-compat-report/光影瞄具-当前构建说明-2026-11-06.md` §11：动画层是对上游的忠实移植（Lua 数据驱动 + 370 个单测），"大重构"缺结构依据；已证实的 6 条局部缺陷在 2026-11-06 14:06 构建全部修完。剩余真债是遮罩链路零测试（纯核抽取）与降级路径戳记中心写死 |
 
 ---
 
@@ -236,16 +238,19 @@ TACZ                        1.20.1 · com.tacz.guns      ← 枪包格式的定�
 
 **平台做不到的**
 
-1. **`PlayerAnimator` 第三人称动画** —— 依赖的 [playerAnimator](https://modrinth.com/mod/playeranimator)
-   最低只支持 1.16.4，**没有 1.12.2 版本**。`display` 里的 `player_animator_3rd` 会被解析但不会生效。
-2. **KubeJS 脚本** —— 上游是 JS、本项目的脚本层是 Lua，引擎不互通。
-3. **1.20.1 特有的 datapack 能力** —— 1.12.2 的配方/战利品系统不完备，部分类型无法 1:1。
-4. **联机时的模型/贴图** —— 服务端只下发数据、脚本、lang 与 display 定义；
+1. **KubeJS 脚本** —— 上游是 JS、本项目的脚本层是 Lua，引擎不互通。
+2. **1.20.1 特有的 datapack 能力** —— 1.12.2 的配方/战利品系统不完备，部分类型无法 1:1。
+3. **联机时的模型/贴图** —— 服务端只下发数据、脚本、lang 与 display 定义；
    模型、贴图、音效文件体积过大仍由客户端本地包提供（上游架构亦如此）。
    远程客户端只保证"数值与表现定义一致"，**外观需要本地装包**。
 
 **需要手动操作或已知边界**
 
+4. **骨骼级第三人称动画需要 1.12.2 的 playerAnimator 移植版**（modid `playeranimator`，
+   包名 `dev.kosmx.playerAnim`，纯客户端库，需单独安装）。官方 playerAnimator 最低只到 1.16.4，
+   所以这里依赖的是 1.12.2 移植。**没装也不会坏**：所有入口短路，第三人称继续走
+   `third_person_animation` 的 vanilla 骨骼姿势；装了之后也只有 display 声明 `player_animator_3rd`
+   的枪播放 clip。
 5. **`/tacz reload` 后 lang / vanilla 侧贴图需要 F3+T**。
    在集成服环境下自动调用 `refreshResources()` 会触发
    `MinecraftServer.runScheduledTasks → addScheduledTask` 的递归并 StackOverflow，

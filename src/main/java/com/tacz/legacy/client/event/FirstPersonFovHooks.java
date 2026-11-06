@@ -30,6 +30,7 @@ public final class FirstPersonFovHooks {
     private static Float lastWorldFov;
     @Nullable
     private static Float lastItemModelFov;
+    private static long lastFovProbeLog;
 
     private FirstPersonFovHooks() {
     }
@@ -42,6 +43,11 @@ public final class FirstPersonFovHooks {
             lastWorldFov = resolved;
         } else {
             lastItemModelFov = resolved;
+        }
+        String probe = System.getenv("TACZ_PROBE");
+        if (probe != null && probe.contains("fovdebug") && System.currentTimeMillis() - lastFovProbeLog > 1000L) {
+            lastFovProbeLog = System.currentTimeMillis();
+            System.out.println("[FovProbe] useFOVSetting=" + useFOVSetting + " original=" + originalFov + " resolved=" + resolved);
         }
         return resolved;
     }
