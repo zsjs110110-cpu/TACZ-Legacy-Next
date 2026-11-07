@@ -12,11 +12,14 @@ import com.google.gson.JsonSyntaxException
 import com.google.gson.annotations.SerializedName
 import com.google.gson.stream.JsonReader
 import com.tacz.legacy.TACZLegacy
+import com.tacz.legacy.api.event.GunPackReloadedEvent
 import com.tacz.legacy.api.modifier.JsonProperty
 import com.tacz.legacy.api.modifier.Modifier
 import com.tacz.legacy.api.modifier.ModifierEvaluator
 import com.tacz.legacy.api.modifier.ParameterizedCachePair
 import net.minecraft.util.ResourceLocation
+import net.minecraftforge.common.MinecraftForge
+import net.minecraftforge.fml.common.FMLCommonHandler
 import net.minecraftforge.fml.common.Loader
 import net.minecraftforge.fml.common.ModContainer
 import net.minecraftforge.fml.common.versioning.ArtifactVersion
@@ -460,6 +463,16 @@ internal object TACZGunPackRuntimeRegistry {
         // D-5：数据换了一轮就重新给一次"缺 ID"告警，否则上一次 reload 缺过的 ID 会永久静音
         TACZMissingIdReporter.reset()
         logSnapshotSummary(loaded)
+        // 快照换完才广播：CraftTweaker / GroovyScript / JEI 都挂这个时机重新读配方或刷新列表。
+        // 失败分支不广播（那时保留的还是旧快照），否则外部会按一份并不存在的数据去重建。
+        try {
+            MinecraftForge.EVENT_BUS.post(
+                GunPackReloadedEvent(FMLCommonHandler.instance().side)
+            )
+        } catch (throwable: Throwable) {
+            // 外部处理器（脚本、JEI）出错不能把重载本身拖垮
+            TACZLegacy.logger.warn("[GunPackRuntime] Reload listeners failed: {}", throwable.toString())
+        }
         return loaded
     }
 

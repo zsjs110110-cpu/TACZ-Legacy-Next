@@ -138,11 +138,15 @@
 | 项 | 原因 |
 |---|---|
 | KubeJS 脚本 | 上游是 JS、本项目脚本层是 Lua，引擎不互通 |
-| CraftTweaker / GroovyScript 兼容 | 本分支未接线（整合包无法用脚本增删改配方） |
-| JEI 制作台配方分类 | 只做了 NBT 子类型注册，玩家在 JEI 里查不到合成方式 |
 | 会开枪的 NPC | 缺 `EntityAIBase`；底层 `IGunOperator` 已面向任意 `LivingEntity`，第三方可自行实现 |
 | LOD / 渲染距离 | 1.12.2 缺对应机制 |
 | 皮肤系统 | 上游本身只有空壳（`skinIndexMap` 从不写入），两个版本都不会加载皮肤 |
+
+**已从本节移出**：CraftTweaker / GroovyScript 接线与 JEI 制作台配方分类在 2026-11-06 落地
+（`api/gunsmith/GunSmithRecipes`、`integration/crafttweaker/`、`integration/jei/GunSmithTableCategory`），
+并在同一天晚上装进真实环境（JEI 4.24.0.1042 / CT 4.1.20.715 / GroovyScript 1.5.0）**运行时验证通过**；
+期间修掉一个 lang 键进错文件格式的缺陷。逐条证据与剩余未测项（只有"人工按 R 看 JEI 排版"）见
+[`SCRIPTING-COMPAT.md`](SCRIPTING-COMPAT.md) 第 5、7 节。
 
 ---
 

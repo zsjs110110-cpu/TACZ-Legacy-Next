@@ -33,6 +33,7 @@ import net.minecraft.nbt.NBTTagCompound
 import net.minecraft.util.JsonUtils
 import net.minecraft.util.ResourceLocation
 import net.minecraftforge.common.crafting.CraftingHelper
+import com.google.gson.JsonSyntaxException
 import net.minecraftforge.common.crafting.JsonContext
 import net.minecraftforge.oredict.OreDictionary
 import net.minecraftforge.fml.common.registry.ForgeRegistries
@@ -41,7 +42,55 @@ import java.util.Locale
 internal data class LegacyGunSmithIngredient(
     val ingredient: Ingredient,
     val count: Int,
-)
+    /**
+     * `forge:partial_nbt` 的样本栈（物品 + 元数据 + 那份"部分 NBT"）。
+     *
+     * 非空时**不**走 `ingredient.apply`：原版 `Ingredient` 比的是 NBT 全等，
+     * 而枪械的 NBT 里还有弹药数、已装配件等一堆运行时字段，全等永远不成立。
+     * 这里改成"物品与元数据相同，且手上物品的 NBT 是样本 NBT 的超集"。
+     * 样本同时用来给 JEI / 制作台画图标（带 GunId 的栈才会渲染成那把具体的枪）。
+     */
+    val partialSample: ItemStack? = null,
+    /**
+     * 这条材料来自哪个标签、而该标签在本机一个物品都没有（例如 1.12 没有紫水晶，
+     * `forge:gems/amethyst` 就是空的）。只用于展示层把"空格"画成"缺什么"，不参与匹配。
+     */
+    val missingTag: String? = null,
+) {
+    fun matches(stack: ItemStack?): Boolean {
+        if (stack == null || stack.isEmpty) {
+            return false
+        }
+        val sample = partialSample
+            ?: return ingredient.apply(stack)
+        if (stack.item != sample.item || stack.metadata != sample.metadata) {
+            return false
+        }
+        return PartialNbtMatcher.contains(stack.tagCompound, sample.tagCompound)
+    }
+}
+
+/**
+ * "部分 NBT 是否被实际 NBT 满足"的判定，与物品注册表无关，所以单独拿出来便于单测。
+ */
+internal object PartialNbtMatcher {
+    fun contains(actual: NBTTagCompound?, required: NBTTagCompound?): Boolean {
+        if (required == null || required.keySet.isEmpty()) {
+            return true
+        }
+        if (actual == null) {
+            return false
+        }
+        return required.keySet.all { key ->
+            val want = required.getTag(key)
+            val have = actual.getTag(key)
+            when {
+                want is NBTTagCompound && have is NBTTagCompound -> contains(have, want)
+                else -> have != null && have == want
+            }
+        }
+    }
+}
 
 internal data class LegacyGunSmithRecipe(
     val id: ResourceLocation,
@@ -61,16 +110,97 @@ internal object LegacyGunSmithingRuntime {
     private var cachedSnapshot: TACZRuntimeSnapshot? = null
     private var cachedRecipes: Map<ResourceLocation, LegacyGunSmithRecipe> = emptyMap()
 
-    fun recipes(snapshot: TACZRuntimeSnapshot = TACZGunPackRuntimeRegistry.getSnapshot()): Map<ResourceLocation, LegacyGunSmithRecipe> {
-        synchronized(this) {
-            if (cachedSnapshot !== snapshot) {
-                cachedSnapshot = snapshot
-                cachedRecipes = snapshot.recipes.values.asSequence()
-                    .mapNotNull { parseRecipe(it, snapshot) }
-                    .associateBy(LegacyGunSmithRecipe::id)
-            }
-            return cachedRecipes
+    private const val GUNSMITH_RECIPE_TYPE = "tacz:gun_smith_table_crafting"
+    private const val PARTIAL_NBT_TYPE = "forge:partial_nbt"
+    private const val TAG_PREFIX = "#"
+
+    /**
+     * 1.13 扁平化里"同一个物品换了 id"的等价改名，只收录实测过的：
+     * 1.12 的闪烁西瓜片注册名是 `speckled_melon`（实测本机物品表里没有 `golden_melon`），
+     * 1.13 起才叫 `glistering_melon_slice`。
+     * 新增条目请保持"同一物品、只是改名"，不要往里塞不同物品。
+     */
+    private val FLATTENING_RENAMES = mapOf(
+        "minecraft:glistering_melon_slice" to "minecraft:speckled_melon",
+    )
+
+    /**
+     * 脚本（CraftTweaker / GroovyScript）改动，叠在枪包解析出来的基础表之上。
+     *
+     * 故意**不随 `/tacz reload` 清空**：1.12.2 的 CraftTweaker 无法重跑脚本（只有 1.11- 的
+     * `/ct reload` 和 1.14+ 的 `/reload` 能重载），如果重载就把改动抹掉，等于让 CT 用户
+     * 每次改数据都得重启游戏。能重跑脚本的 GroovyScript 侧可以显式调 `scriptClear()` 再重建。
+     */
+    private val removedByScript = LinkedHashSet<ResourceLocation>()
+    private val addedByScript = LinkedHashMap<ResourceLocation, LegacyGunSmithRecipe>()
+
+    /** 基础表：枪包 JSON 解析结果，快照换了才重建。调用方必须已持有本对象锁。 */
+    private fun baseRecipes(snapshot: TACZRuntimeSnapshot): Map<ResourceLocation, LegacyGunSmithRecipe> {
+        if (cachedSnapshot !== snapshot) {
+            cachedSnapshot = snapshot
+            cachedRecipes = snapshot.recipes.values.asSequence()
+                .mapNotNull { parseRecipe(it, snapshot) }
+                .associateBy(LegacyGunSmithRecipe::id)
         }
+        return cachedRecipes
+    }
+
+    private fun withOverlay(base: Map<ResourceLocation, LegacyGunSmithRecipe>): Map<ResourceLocation, LegacyGunSmithRecipe> {
+        if (removedByScript.isEmpty() && addedByScript.isEmpty()) {
+            return base
+        }
+        val merged = LinkedHashMap(base)
+        removedByScript.forEach { merged.remove(it) }
+        addedByScript.forEach { (id, recipe) -> merged[id] = recipe }
+        return merged
+    }
+
+    fun recipes(snapshot: TACZRuntimeSnapshot = TACZGunPackRuntimeRegistry.getSnapshot()): Map<ResourceLocation, LegacyGunSmithRecipe> {
+        synchronized(this) { return withOverlay(baseRecipes(snapshot)) }
+    }
+
+    /** 脚本删除一条配方。返回它原本是否存在。 */
+    fun scriptRemove(id: ResourceLocation, snapshot: TACZRuntimeSnapshot = TACZGunPackRuntimeRegistry.getSnapshot()): Boolean {
+        synchronized(this) {
+            // 必须查"叠加之后的有效表"而不是基础表：基础表里那条配方一直都在，
+            // 只是被 removedByScript 挡住了。查基础表会让第二次删除也返回 true。
+            val present = withOverlay(baseRecipes(snapshot)).containsKey(id)
+            if (present) {
+                addedByScript.remove(id)
+                removedByScript += id
+            }
+            return present
+        }
+    }
+
+    /** 脚本新增/覆盖一条配方。返回是否覆盖了同名条目。 */
+    fun scriptAdd(recipe: LegacyGunSmithRecipe, snapshot: TACZRuntimeSnapshot = TACZGunPackRuntimeRegistry.getSnapshot()): Boolean {
+        synchronized(this) {
+            val replaced = baseRecipes(snapshot).containsKey(recipe.id) || addedByScript.containsKey(recipe.id)
+            removedByScript.remove(recipe.id)
+            addedByScript[recipe.id] = recipe
+            return replaced
+        }
+    }
+
+    /** 清空全部脚本改动（给能重跑脚本的加载器用，比如 GroovyScript 热重载）。 */
+    fun scriptClear() {
+        synchronized(this) {
+            removedByScript.clear()
+            addedByScript.clear()
+        }
+    }
+
+    fun scriptChangeCount(): Int = synchronized(this) { removedByScript.size + addedByScript.size }
+
+    /**
+     * 用与枪包完全相同的解析路径构造脚本配方：复用 `result`/`materials` 的
+     * item / ore dictionary / 数组 / NBT 语义，避免在脚本侧重新实现一套产出规则
+     * （枪械产出要写 GunId NBT、附件要按类型装位，重复实现必然漂移）。
+     */
+    fun parseScriptRecipe(id: ResourceLocation, raw: JsonObject): LegacyGunSmithRecipe? {
+        val snapshot = TACZGunPackRuntimeRegistry.getSnapshot()
+        return parseRecipe(TACZRecipeDefinition(id, raw), snapshot)
     }
 
     fun recipeNamespacesForBlock(
@@ -142,7 +272,7 @@ internal object LegacyGunSmithingRuntime {
     }
 
     fun ingredientCount(player: EntityPlayer, ingredient: LegacyGunSmithIngredient): Int {
-        return player.inventory.mainInventory.sumOfMatching(ingredient.ingredient)
+        return player.inventory.mainInventory.sumOfMatching(ingredient)
     }
 
     fun canCraft(player: EntityPlayer, recipe: LegacyGunSmithRecipe): Boolean {
@@ -178,6 +308,13 @@ internal object LegacyGunSmithingRuntime {
 
     private fun parseRecipe(definition: TACZRecipeDefinition, snapshot: TACZRuntimeSnapshot): LegacyGunSmithRecipe? {
         val root = definition.raw
+        // 枪包里也能放原版工作台配方（1.20 靠 datapack 自己加载）。1.12.2 没有 datapack，
+        // 这些文件不该由制作台解析器接管，以前会被当成 custom 产出解析然后整条报错。
+        val declaredType = root.get("type")?.takeIf(JsonElement::isJsonPrimitive)?.asString
+        if (declaredType != null && declaredType != GUNSMITH_RECIPE_TYPE) {
+            TACZLegacy.logger.debug("Skipped non-gunsmith recipe {} (type {})", definition.id, declaredType)
+            return null
+        }
         val resultObject = root.getAsJsonObject("result") ?: return null
         val context = JsonContext(definition.id.namespace)
         return runCatching {
@@ -203,15 +340,74 @@ internal object LegacyGunSmithingRuntime {
         }
         val obj = element.asJsonObject
         val itemElement = obj.get("item") ?: return null
-        val ingredient = parseIngredient(itemElement, context)
         val count = JsonUtils.getInt(obj, "count", 1).coerceAtLeast(1)
-        return LegacyGunSmithIngredient(ingredient = ingredient, count = count)
+        val sample = parsePartialNbtSample(itemElement, context)
+        if (sample != null) {
+            return LegacyGunSmithIngredient(
+                ingredient = Ingredient.fromStacks(sample.copy()),
+                count = count,
+                partialSample = sample,
+            )
+        }
+        val ingredient = parseIngredient(itemElement, context)
+        val tagId = sourceTagId(itemElement)
+        val missingTag = if (tagId != null && ingredient.getMatchingStacks().isEmpty()) tagId else null
+        return LegacyGunSmithIngredient(ingredient = ingredient, count = count, missingTag = missingTag)
+    }
+
+    /** 材料写法里携带的标签 id（`{"tag": ...}` 或 1.15+ 的 `"#..."`），没有则 null。 */
+    private fun sourceTagId(itemElement: JsonElement): String? = when {
+        itemElement.isJsonObject && itemElement.asJsonObject.has("tag") ->
+            JsonUtils.getString(itemElement.asJsonObject, "tag")
+        itemElement.isJsonPrimitive && itemElement.asString.startsWith(TAG_PREFIX) ->
+            itemElement.asString.substring(TAG_PREFIX.length)
+        else -> null
+    }
+
+    /**
+     * `forge:partial_nbt`（1.20 Forge 的 ingredient 类型）在 1.12.2 的 `CraftingHelper` 里不存在，
+     * 以前会让整条配方解析失败被丢弃（daffas_arsenal 有 12 条枪械配方因此消失）。
+     * 这里自己把它读成一个"物品 + 部分 NBT"的样本；匹配规则见 [LegacyGunSmithIngredient.matches]。
+     */
+    private fun parsePartialNbtSample(element: JsonElement, context: JsonContext): ItemStack? {
+        if (!element.isJsonObject) {
+            return null
+        }
+        val obj = element.asJsonObject
+        if (JsonUtils.getString(obj, "type", "") != PARTIAL_NBT_TYPE) {
+            return null
+        }
+        val sample = stackFromItemId(JsonUtils.getString(obj, "item"), context)
+        parseCompoundTag(obj.get("nbt"))?.let { ensureTag(sample).merge(it) }
+        return sample
+    }
+
+    /** 把 `namespace:path` 形式的物品 id 解析成 1 个物品的 stack，支持 1.13 扁平化改名。 */
+    private fun stackFromItemId(rawId: String, context: JsonContext): ItemStack {
+        val id = appendNamespace(context.modId, rawId)
+        val alias = FLATTENING_RENAMES[id.toString()]
+        val resolved = if (alias != null) ResourceLocation(alias) else id
+        val item = ForgeRegistries.ITEMS.getValue(resolved)
+        if (item == null || item == Items.AIR) {
+            throw JsonSyntaxException(
+                if (alias == null) "Unknown item '$rawId'" else "Unknown item '$rawId' (改名别名 '$alias' 同样不存在)"
+            )
+        }
+        return ItemStack(item)
     }
 
     private fun parseIngredient(element: JsonElement, context: JsonContext): Ingredient {
         if (element.isJsonArray) {
             val merged = element.asJsonArray.flatMap { child -> parseIngredient(child, context).getMatchingStacks().map(ItemStack::copy) }
             return if (merged.isEmpty()) Ingredient.EMPTY else Ingredient.fromStacks(*merged.toTypedArray())
+        }
+        if (element.isJsonPrimitive) {
+            // 1.15+ 的裸字符串写法：`"#forge:ingots/iron"` 是标签，其余是物品 id
+            val raw = element.asString
+            if (raw.startsWith(TAG_PREFIX)) {
+                return ingredientFromTag(raw.substring(TAG_PREFIX.length))
+            }
+            return Ingredient.fromStacks(stackFromItemId(raw, context))
         }
         if (!element.isJsonObject) {
             return CraftingHelper.getIngredient(element, context)
@@ -220,6 +416,12 @@ internal object LegacyGunSmithingRuntime {
         if (obj.has("tag")) {
             val tagId = JsonUtils.getString(obj, "tag")
             return ingredientFromTag(tagId)
+        }
+        val itemMember = obj.get("item")
+        if (itemMember != null && itemMember.isJsonPrimitive && !obj.has("type")) {
+            // `{"item": "minecraft:glistering_melon_slice"}` 这种 1.15+ 写法，
+            // 1.12 的 CraftingHelper 只接受嵌套对象；自己解析顺带才能吃到 1.13 改名别名。
+            return Ingredient.fromStacks(stackFromItemId(itemMember.asString, context))
         }
         return CraftingHelper.getIngredient(obj, context)
     }
@@ -274,14 +476,22 @@ internal object LegacyGunSmithingRuntime {
         }
     }
 
-    private fun oreDictionaryName(tagId: String): String? {
+    internal fun oreDictionaryName(tagId: String): String? {
         if (tagId == "minecraft:logs") {
             return "logWood"
+        }
+        // 1.20 的"可合成石料"标签（圆石/黑石/深板岩圆石），1.12 只有圆石
+        if (tagId == "minecraft:stone_crafting_materials") {
+            return "cobblestone"
         }
         if (!tagId.startsWith("forge:")) {
             return null
         }
         val path = tagId.removePrefix("forge:")
+        // 1.20 的"硅质玻璃"就是普通玻璃（区别于染色玻璃），1.12 的矿典名是 blockGlass
+        if (path == "glass/silica") {
+            return "blockGlass"
+        }
         if ('/' !in path) {
             return when (path) {
                 "glass" -> "blockGlass"
@@ -294,6 +504,10 @@ internal object LegacyGunSmithingRuntime {
         val material = path.substringAfter('/').split('/', '_', '-')
             .filter(String::isNotBlank)
             .joinToString(separator = "") { segment -> segment.replaceFirstChar { it.titlecase(Locale.ROOT) } }
+        // 1.12 的存储块矿典名是 blockIron / blockRedstone，不是 storage_blockIron
+        if (prefix == "storage_blocks") {
+            return "block$material"
+        }
         val singular = when {
             prefix.endsWith("ies") -> prefix.dropLast(3) + "y"
             prefix.endsWith('s') -> prefix.dropLast(1)
@@ -308,7 +522,14 @@ internal object LegacyGunSmithingRuntime {
             "gun" -> buildGunResult(result, context)
             "ammo" -> buildAmmoResult(result, context)
             "attachment" -> buildAttachmentResult(result, context)
-            "custom" -> CraftingHelper.getItemStack(JsonUtils.getJsonObject(result, "item"), context)
+            "custom" -> {
+                val itemElement = result.get("item")
+                if (itemElement != null && itemElement.isJsonPrimitive) {
+                    stackFromItemId(itemElement.asString, context)
+                } else {
+                    CraftingHelper.getItemStack(JsonUtils.getJsonObject(result, "item"), context)
+                }
+            }
             else -> throw IllegalArgumentException("Unsupported gunsmith result type: $type")
         }
         applyExtraNbt(stack, result.get("nbt"))
@@ -469,7 +690,7 @@ internal object LegacyGunSmithingRuntime {
                 if (remaining <= 0) {
                     return@forEachIndexed
                 }
-                if (stack.isEmpty || !material.ingredient.apply(stack)) {
+                if (!material.matches(stack)) {
                     return@forEachIndexed
                 }
                 val canTake = minOf(remaining, available[slot])
@@ -533,7 +754,7 @@ internal object LegacyGunSmithingRuntime {
         return created
     }
 
-    private fun List<ItemStack>.sumOfMatching(ingredient: Ingredient): Int = fold(0) { acc, stack ->
-        if (stack.isEmpty || !ingredient.apply(stack)) acc else acc + stack.count
+    private fun List<ItemStack>.sumOfMatching(material: LegacyGunSmithIngredient): Int = fold(0) { acc, stack ->
+        if (material.matches(stack)) acc + stack.count else acc
     }
 }

@@ -16,7 +16,6 @@
   "commands.tacz.config.server_shoot_network_check.disabled": "§a§l[TACZ]§r 服务端射击网络检查已关闭",
   "commands.tacz.config.server_shoot_cooldown_check.enabled": "§a§l[TACZ]§r 服务端射击冷却检查已启用",
   "commands.tacz.config.server_shoot_cooldown_check.disabled": "§a§l[TACZ]§r 服务端射击冷却检查已关闭\n §6警告: 关闭此项会导致服务端完全不计算枪械开火冷却，这将导致潜在的作弊可能。你仅应该在经常完全无法开火的时候尝试关闭它。",
-
   "config.tacz.open_gunpack_folder": "打开枪包文件夹",
   "config.tacz.client.key": "按键",
   "config.tacz.client.key.hold_to_aim": "长按瞄准",
@@ -169,6 +168,7 @@
   "painting.tacz.blood_strike_2.author": "血战突袭",
   "jei.tacz.attachment_query.more": "更多...",
   "jei.tacz.attachment_query.title": "配件查询",
+  "jei.tacz.gun_smith_table.title": "制作台配方",
   "key.category.tacz": "永恒枪械工坊：Zero",
   "key.tacz.aim.desc": "瞄准",
   "key.tacz.crawl.desc": "爬行",
@@ -281,5 +281,6 @@
   "tooltip.tacz.page.previous": "上一页",
   "tooltip.tacz.refit.unload": "卸载",
   "tooltip.tacz.attachment.laser.color": "镭射颜色: %s",
-  "tacz.resources.modresources": "永恒枪械工坊：Zero 枪包资源集"
+  "tacz.resources.modresources": "永恒枪械工坊：Zero 枪包资源集",
+  "jei.tacz.missing_material": "缺少材料：%s"
 }

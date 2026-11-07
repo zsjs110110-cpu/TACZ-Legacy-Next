@@ -206,6 +206,16 @@ dependencies {
         logger.warn("playeranimator-1.12.2 jar not found at ${playerAnimatorJar.absolutePath}; compat layer will not compile")
     }
 
+    // CraftTweaker 4（1.12.2 线）同样只在编译期引用：运行期由整合包自己装。
+    // jar 取自本地整合包副本 `F:/new work/mc-devlibs/`（源 zip 里的 CraftTweaker2-1.12-4.1.20.715.jar），
+    // 因为 CT4 没有可公开解析的 maven 坐标。缺 jar 时 compat 层不编译，主模组不受影响。
+    val craftTweakerJar = file("../mc-devlibs/CraftTweaker2-1.12-4.1.20.715.jar")
+    if (craftTweakerJar.exists()) {
+        compileOnly(files(craftTweakerJar))
+    } else {
+        logger.warn("CraftTweaker2 jar not found at ${craftTweakerJar.absolutePath}; crafttweaker compat will not compile")
+    }
+
     if (use_assetmover.toBoolean()) {
         implementation("com.cleanroommc:assetmover:2.5")
     }

@@ -191,6 +191,7 @@
   "subtitle.tacz.gun": "Gun Sound",
   "subtitle.tacz.target_block_hit": "Target Block: Hit",
   "jei.tacz.attachment_query.title": "Attachment Query",
+  "jei.tacz.gun_smith_table.title": "Gun Smithing Recipes",
   "jei.tacz.attachment_query.more": "More...",
   "config.tacz.open_gunpack_folder": "Open Gun Pack Folder",
   "config.tacz.client.key": "Key",
@@ -280,5 +281,6 @@
   "config.tacz.client.render.enable_tooltip_id.desc": "Display the gun/ammo/attachment id in item tooltip when advanced tooltip(F3+H) is on.",
   "tooltip.tacz.attachment.laser.color": "Laser Color: %s",
   "config.tacz.client.render.laser_fadeout": "Laser Fadeout Effect",
-  "config.tacz.client.render.laser_fadeout.desc": "Whether or not apply fadeout effect on the laser beam. Close this may improve laser performance under some shaders."
+  "config.tacz.client.render.laser_fadeout.desc": "Whether or not apply fadeout effect on the laser beam. Close this may improve laser performance under some shaders.",
+  "jei.tacz.missing_material": "Missing material: %s"
 }

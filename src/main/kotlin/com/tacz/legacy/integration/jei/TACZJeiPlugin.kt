@@ -1,9 +1,12 @@
 package com.tacz.legacy.integration.jei
 
+import com.tacz.legacy.api.gunsmith.GunSmithRecipes
 import com.tacz.legacy.common.item.LegacyBlockItem
 import com.tacz.legacy.common.item.LegacyItems
 import mezz.jei.api.IModPlugin
+import mezz.jei.api.IModRegistry
 import mezz.jei.api.ISubtypeRegistry
+import mezz.jei.api.recipe.IRecipeCategoryRegistration
 import mezz.jei.api.JEIPlugin
 import net.minecraft.item.ItemStack
 
@@ -45,6 +48,39 @@ public class TACZJeiPlugin : IModPlugin {
             item.isAllTypeCreative(stack) -> "all_type_creative"
             item.isCreative(stack) -> "creative"
             else -> "level_${item.getAmmoLevel(stack)}"
+        }
+    }
+
+    private var gunSmithCategory: GunSmithTableCategory? = null
+
+    override fun registerCategories(categoryRegistration: IRecipeCategoryRegistration) {
+        val category = GunSmithTableCategory(categoryRegistration.jeiHelpers.guiHelper)
+        gunSmithCategory = category
+        categoryRegistration.addRecipeCategories(category)
+    }
+
+    /**
+     * 注册制作台配方与催化剂方块。
+     *
+     * 时机是安全的：枪包快照在 `preInit` 就建好了（`TACZLegacy` → `DefaultGunPackExporter`），
+     * 而 JEI/HEI 的插件注册跑在 `FMLLoadCompleteEvent`，晚于它。
+     *
+     * 但**活重载不在这里刷新**：`IJeiHelpers` 不暴露配方注册表，HEI 的 `IRecipeRegistry` 需要
+     * `@Inject` 才拿得到。所以 `/tacz reload` 改完配方后按 F3+T 重跑一次注册（与 lang 那条
+     * 已知限制同一个操作）。
+     */
+    override fun register(registry: IModRegistry) {
+        if (gunSmithCategory == null) {
+            return
+        }
+        registry.addRecipes(GunSmithRecipes.all().map { GunSmithRecipeWrapper(it) }, GunSmithTableCategory.UID)
+        listOf(
+            LegacyItems.GUN_SMITH_TABLE,
+            LegacyItems.WORKBENCH_A,
+            LegacyItems.WORKBENCH_B,
+            LegacyItems.WORKBENCH_C,
+        ).forEach { item ->
+            registry.addRecipeCatalyst(ItemStack(item), GunSmithTableCategory.UID)
         }
     }
 }

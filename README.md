@@ -13,15 +13,16 @@
 >    不需要作者为 1.12.2 改数据。
 >
 > 两者的优先级关系是：**先对齐上游语义，再做平台缺失处的等价实现**；
-> 平台确实做不到的（如 KubeJS、CraftTweaker），明确记录为限制而不是假装实现。
+> 平台确实做不到的（如 KubeJS 的 1.12.2 运行时），明确记录为限制而不是假装实现。
+> CraftTweaker / GroovyScript / JEI 这三条 1.12.2 生态的等价面已在 0.1.2 落地并运行时验证（见下文）。
 
 ---
 
 ## 下载与安装
 
-最新构建：**[Release v0.1.1](https://github.com/zsjs110110-cpu/TACZ-Legacy-Next/releases/tag/v0.1.1)**（52.8 MB，从 Release 附件下载）
+最新构建：**[Release v0.1.2](https://github.com/zsjs110110-cpu/TACZ-Legacy-Next/releases/tag/v0.1.2)**（52.8 MB，从 Release 附件下载）
 
-SHA256 `017470E2078EAB45BA59E77F5A4F04B07BAD9F3ED5B13B3C0C2A9AFDFA937730`
+SHA256 `5958A636264B9B9C16B56D9EBDDA536977827D4A49308AD911C8DA802E45741A`
 
 > 构建产物不放进 Git 仓库，避免每个克隆都多下 50 MB；源码与文档在仓库里，jar 走 Release 附件。
 
@@ -29,11 +30,14 @@ SHA256 `017470E2078EAB45BA59E77F5A4F04B07BAD9F3ED5B13B3C0C2A9AFDFA937730`
 
 1. 装 Forge **14.23.5.2859**（Minecraft 1.12.2）
 2. `mods/` 里放三样：
-   - `TACZ-Legacy-0.1.1.jar`
+   - `TACZ-Legacy-0.1.2.jar`
    - [MixinBooter](https://www.curseforge.com/minecraft/mc-mods/mixinbooter) 11.x
    - Forgelin-Continuous（1.12.2 的 Kotlin 运行时）
 3. 启动游戏。枪包放到 `.minecraft/tacz/<包名>/`，**目录或 zip 都可以**，
    按 1.20.1 格式写的包直接放进去即可，不需要为 1.12.2 改数据。
+4. 可选增强（不装也能玩）：JEI 4.x / HEI（制作台配方查询分类）、
+   CraftTweaker 4 + MTLib（`mods.tacz.GunSmithing` 脚本改配方）、GroovyScript 1.5+（直接调公开 API）。
+   三者互不依赖，装哪个生效哪个；用法见 [`docs/SCRIPTING-COMPAT.md`](docs/SCRIPTING-COMPAT.md)。
 
 **专用服**
 
@@ -180,11 +184,55 @@ TACZ                        1.20.1 · com.tacz.guns      ← 枪包格式的定�
 
 | 项 | 现状 | 说明 |
 |---|---|---|
-| **CraftTweaker 兼容** | ❌ 全仓零代码 | 整合包无法用脚本增删改枪械/配件/弹药配方 |
-| **GroovyScript 兼容** | ❌ 全仓零代码 | 同上 |
-| **JEI 制作台配方分类** | ❌ 只有 NBT 子类型注册 | 玩家在 JEI 里查不到枪械/配件的合成方式 |
 | **会开枪的 NPC** | ❌ 缺 `EntityAIBase` | 底层 `IGunOperator` 已面向任意 `LivingEntity`，第三方理论上可自行实现 |
 | **渲染 / 动画管线重构** | ⚠️ 结论已改：不需要大重构 | 静态研判见 `tacz-compat-report/光影瞄具-当前构建说明-2026-11-06.md` §11：动画层是对上游的忠实移植（Lua 数据驱动 + 370 个单测），"大重构"缺结构依据；已证实的 6 条局部缺陷在 2026-11-06 14:06 构建全部修完。剩余真债是遮罩链路零测试（纯核抽取）与降级路径戳记中心写死 |
+
+### 2026-11-06 晚：脚本化与展示层三项从"未验证"改为"运行时验证通过"
+
+这三项原先因为测试环境里没有 CT / GroovyScript / JEI 核心而只能标成未验证，当天补上真实依赖
+（JEI 4.24.0.1042、CraftTweaker 4.1.20.715 + MTLib 3.0.7、GroovyScript 1.5.0）后全部跑通：
+
+| 项 | 现状 | 关键证据 |
+|---|---|---|
+| **CraftTweaker 兼容** | ✅ 运行时验证通过 | `scripts/tacz.zs` 14 行探针无错：删除后 `exists=false`、`materialCount=4`、非法 JSON 被拒且不中断脚本、`clear()` 撤销 2 条并让配方回到原状 |
+| **GroovyScript 兼容** | ✅ 运行时验证通过 | `groovy/postInit/*.groovy` 能看到 CraftTweaker 的删除结果（298→297，同一叠加层）；`/gs reload` 可在运行期重跑脚本且改动不丢 |
+| **JEI 制作台配方分类** | ✅ 运行时验证通过 | JEI 运行期注册表实测：分类 1 个、催化剂 4 件、背景 160×36、标题本地化为"制作台配方"；逐格验证 1123 个槽位数量 0 不符（该轮 295 条配方，D-32 之后总数 316） |
+
+同一轮验证里修掉三个真缺陷：
+
+1. `jei.tacz.gun_smith_table.title` 当时只加进了 `lang/*.json`，而 1.12.2 读的是 `lang/*.lang`，
+   于是 JEI 标题显示成原始键；补齐 en_us / zh_cn / zh_tw 三个 `.lang` 后运行期显示正确。
+2. 材料格只画物品、不画数量——`Ingredient.getMatchingStacks()` 给的候选都是 1 个，
+   `material.count` 没传进 JEI 槽位。这条是用户按 R 截图实测出来的；改成传"带数量的拷贝"后
+   逐条比对 1123 个槽位 0 不符。同一天第二轮又按用户反馈重做了排版：槽位框改用
+   JEI 的 `setBackground(index, getSlotDrawable())` 逐格挂（自算坐标贴图的写法会画歪），
+   材料区与产出之间加实心小箭头，`RecipeLayout` 逐格验证结果为 1123 格 / 无框 0 / 坐标错 0 / 数量错 0。
+3. **23 条制作台配方被整条丢弃**（活环境日志 `Failed to parse gunsmith recipe`）。现在
+   `forge:partial_nbt` 由我们自己的材料解析支持（匹配语义是"同物品 + NBT 超集"，不能用原版
+   `Ingredient` 的 NBT 全等，否则带运行时字段的枪械永远配不上）、裸字符串 item / `#tag` 写法接受、
+   1.13 扁平化改名走别名表（`glistering_melon_slice` → 实测注册名 `speckled_melon`）、
+   枪包里混的原版工作台配方按 type 跳过而不是误解析；默认包 5 条 `ammo_mod_*` 引用的
+   1.21 物品 `crying_obsidian` 换成了 `obsidian`。活环境结果：解析失败 **23 → 3**，
+   配方总数 **298 → 316**，JEI 同步 316 条。剩下 3 条是第三方包引用 1.14/1.16 物品，1.12 救不回来。
+
+制作台 UI 还做了删除/新增对照：删掉 `daffas_arsenal:gun/auxur` 后 Rifle 页第一行从 Steyr ACR
+变成 G36C，再用 `add(id, json)` 加回来，第一行恢复 Steyr ACR。
+
+共同地基（叠加式配方改动 + `GunPackReloadedEvent`）的单元测试仍在，其中一条测出并修掉了
+"重复删除仍返回 true"的真 bug。细节、逐项验证状态与 ZenScript / GroovyScript 的语法坑见
+[`docs/SCRIPTING-COMPAT.md`](docs/SCRIPTING-COMPAT.md)。
+
+### 2026-11-07：上一轮留下的两件事也收尾了
+
+1. **端到端合成验证**：之前以为 GroovyScript 调不到 internal 方法，其实只有 `getSnapshot`
+   带 `$module` 后缀，按字符串名调用即可。活环境生存模式下对含 `forge:partial_nbt` 材料的
+   `daffas_arsenal:gun/uji` 跑完整生产路径：给错的枪 `canCraft=false` → 给齐材料 `true` →
+   合成出 Dual MAC10 → 材料扣光、产物进背包。超集匹配不只是单测结论了。
+2. **21 个空材料格**：查清全部是 `forge:gems/amethyst`（1.12 没有紫水晶，物品造不出来）。
+   顺手修掉矿典映射的三个真 bug（`storage_blocks/*` 应映射成 `block*`、`glass/silica` 应是
+   `blockGlass`、`minecraft:stone_crafting_materials` 应是 `cobblestone`），活环境证明
+   `storage_blocks/iron` 现在解析出铁块；紫水晶格在 JEI 里改画**屏障 + "缺少材料：forge:gems/amethyst" + 数量**，
+   只影响显示不参与匹配。包作者也可以自己往矿典注册 `gemAmethyst` 让配方复活（文档里给了 CT 写法）。
 
 ---
 
